@@ -808,6 +808,78 @@ void IN_Commands (void)
 }
 
 
+/* BEGIN_LAYER */
+/*
+ * Miyoo: X (left Shift) and L1 (e) are modifiers, not keys of their own; while
+ * one is held, some buttons are turned into other keys (AUX1..AUX5) that the
+ * config binds separately. Select (right Ctrl) is a key of its own (AUX6),
+ * apart from B (left Ctrl). What a key was turned into is remembered until it
+ * is released, so letting go of the modifier first never leaves a command stuck.
+ *    X + Up / Down / Start   ->  AUX1 / AUX2 / AUX3
+ *    L1 + Left / Right       ->  AUX4 / AUX5
+ *    Select                  ->  AUX6
+ */
+static qboolean	in_x_held, in_l1_held;
+static unsigned short	in_held_as[256];
+
+/* returns the key to send, or 0 to swallow the event */
+static int IN_MiyooLayer (int rawsym, int sym, int state)
+{
+	int	orig;
+
+	if (rawsym == SDLK_LSHIFT)
+	{
+		in_x_held = (state != 0);
+		return 0;
+	}
+	if (rawsym == SDLK_e)
+	{
+		in_l1_held = (state != 0);
+		return 0;
+	}
+	if (rawsym == SDLK_RCTRL)
+		return K_AUX6;
+	if (sym <= 0 || sym > 255)
+		return sym;
+
+	orig = sym;
+	if (state)
+	{
+		if (!in_held_as[orig])
+		{
+			int mapped = sym;
+			if (in_x_held)
+			{
+				switch (sym)
+				{
+				case K_UPARROW:		mapped = K_AUX1; break;
+				case K_DOWNARROW:	mapped = K_AUX2; break;
+				case K_ENTER:		mapped = K_AUX3; break;
+				default:		break;
+				}
+			}
+			if (mapped == sym && in_l1_held)
+			{
+				switch (sym)
+				{
+				case K_LEFTARROW:	mapped = K_AUX4; break;
+				case K_RIGHTARROW:	mapped = K_AUX5; break;
+				default:		break;
+				}
+			}
+			in_held_as[orig] = (unsigned short) mapped;
+		}
+		return in_held_as[orig];
+	}
+	if (in_held_as[orig])
+	{
+		sym = in_held_as[orig];
+		in_held_as[orig] = 0;
+	}
+	return sym;
+}
+/* END_LAYER */
+
 void IN_SendKeyEvents (void)
 {
 	SDL_Event event;
@@ -841,7 +913,7 @@ void IN_SendKeyEvents (void)
 				break;
 			}
 			if ((event.key.keysym.sym == SDLK_ESCAPE) &&
-			    (event.key.keysym.mod & KMOD_SHIFT))
+			    (event.key.keysym.mod & KMOD_SHIFT) && !in_x_held)
 			{
 				Con_ToggleConsole_f();
 				break;
@@ -1080,6 +1152,9 @@ void IN_SendKeyEvents (void)
 					sym = 0;
 				break;
 			}
+			sym = IN_MiyooLayer (event.key.keysym.sym, sym, state);
+			if (sym == 0)
+				break;
 			if (!IN_JoystickBlockDoubledKeyEvents(sym))
 				Key_Event(sym, state);
 			break;

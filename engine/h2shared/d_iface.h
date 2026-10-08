@@ -117,8 +117,11 @@ extern int	d_con_indirect;		// if 0, Quake will draw console directly
 					//  draw console via D_DrawRect. Must be
 					//  defined by the driver (vid_*.c)
 
+#ifndef MT_TLS
+#define MT_TLS	__thread	/* Miyoo: per-thread drawing state (second core) */
+#endif
 ASM_LINKAGE_BEGIN
-extern affinetridesc_t	r_affinetridesc;
+extern MT_TLS affinetridesc_t	r_affinetridesc;
 extern spritedesc_t	r_spritedesc;
 extern zpointdesc_t	r_zpointdesc;
 extern polydesc_t	r_polydesc;
@@ -197,7 +200,12 @@ extern byte				*r_skysource;
 #define TRANSPARENT_COLOR	0xFF
 
 ASM_LINKAGE_BEGIN
-extern void *acolormap;	// FIXME: should go away
+extern MT_TLS void *acolormap;	// FIXME: should go away
+/* Miyoo: alias models drawn by both cores (d_polyse.c) */
+void D_PolyMT_Begin (int phase);	/* 0 the models, 1 the weapon */
+void D_PolyMT_End (void);
+void D_PolyMT_Flush (void);	/* before anything else draws, or model memory may move */
+qboolean D_PolyMT_Active (void);
 ASM_LINKAGE_END
 
 //=======================================================================//
@@ -240,6 +248,46 @@ extern float	skytime;
 
 extern int	c_surf;
 extern vrect_t	scr_vrect;
+extern vrect_t	scr_vrect3d;	/* the 3D view area in pixels of the 3D picture (== scr_vrect unless vid_3dscale > 1) */
+extern int	vid_3dscale;	/* 1; 2 when the 3D view is rendered at twice the size of the 2D picture (Miyoo -ui320) */
+extern int	vid_fade3d;	/* set when a menu fade must darken the 3D picture too (split mode) */
+void VID_Use3D (void);		/* vid.width/height/buffer describe the 3D picture; calls nest; no-op if not split */
+void VID_Use2D (void);
+void VID_ClearUIView (void);
+
+/* ---- per-phase timing, enabled by -perf (see vid_miyoo.c) ---- */
+extern int	vid_perf;
+double VID_PerfNow (void);
+void VID_PerfAdd (int id, double ms);
+void VID_PerfCount (int id, int n);
+#define PERF_START()		(vid_perf ? VID_PerfNow () : 0.0)
+#define PERF_STOP(t0, id)	do { if (vid_perf) VID_PerfAdd ((id), VID_PerfNow () - (t0)); } while (0)
+enum { PF_INPUT, PF_SERVER, PF_CLIENT, PF_SCREEN, PF_SOUND, PF_VIEW3D,
+	PF_SETUP,
+	PF_WBUILD,	/* world: edges and surfaces of the visible world and brush models */
+	PF_WSAVE,	/* world: copy kept for the translucent pass */
+	PF_WSCAN,	/* world: sorting the edges line by line, drawing included */
+	PF_WSPANS,	/*   part of PF_WSCAN: drawing the world's textures (D_DrawSurfaces) */
+	PF_MODELS,	/* alias models and sprites */
+	PF_TRANS,	/* water, glass, translucent brush models */
+	PF_TSPANS,	/*   part of PF_TRANS: drawing them */
+	PF_VMODEL, PF_PARTS, PF_WARP, PF_SNDX,
+	PF_MTWAIT,	/* the first core waiting for the second one */
+	PF_SBUILD,	/*   part of PF_WSPANS: rebuilding lit textures (both cores) */
+	PF_MTBUSY,	/* the second core working on drawing jobs */
+	PF_MTWAITC,	/*   part of PF_MTWAIT: texture cache memory still being read */
+	PF_MTWAITU,	/*   part of PF_MTWAIT: waiting for the half of a texture it helps with */
+	PF_MTWAITT,	/*   part of PF_MTWAIT: at the end of the translucent pass */
+	PF_MSETUP,	/* alias models (weapon included): skin, light, frame */
+	PF_MVERTS,	/*   vertices: transform and projection */
+	PF_MTRI,	/*   triangles: clipping and drawing */
+	PF_MPWAIT,	/* models: waiting for the second core's rows */
+	PF_MTRIC,	/*   part of PF_MTRI: models partly off the view (clipped triangles) */
+	PF_MTRIS,	/*   part of PF_MTRI: small far models (point by point subdivision) */
+	PF_MRAST,	/*   part of PF_MTRI: inside D_PolysetDraw* on the first core (sampled 1 in 8) */
+	PF_MTSTEAL,	/* the first core doing queued jobs it took back */
+	PF_N };
+enum { PC_WPOLY, PC_EPOLY, PC_AMODELS, PC_SURF, PC_TLINES, PC_FALLBACK, PC_MTJOBS, PC_MTRIS, PC_MPIX, PC_LITDEF, PC_LITCAP, PC_SHARETR, PC_MSPLIT, PC_MSPLITW, PC_MTU, PC_MTC, PC_MTS, PC_MTSTEAL, PC_THRASH, PC_MOCCL, PC_N };	/* split mode: make the 3D view area of the 2D picture transparent */
 
 extern byte	*r_warpbuffer;
 

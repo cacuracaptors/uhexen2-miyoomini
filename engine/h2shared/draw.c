@@ -1799,6 +1799,9 @@ void Draw_FadeScreen (void)
 	byte		*pbuf;
 	int temp[2048], *pos;
 
+	if (vid_3dscale > 1)
+		vid_fade3d = 1;	// the 3D picture is darkened when the frame is shown
+
 	VID_UnlockBuffer ();
 	S_ExtraUpdate ();
 	VID_LockBuffer ();
@@ -1822,6 +1825,11 @@ void Draw_FadeScreen (void)
 		{
 //			if ((x & 3) != t)
 //				pbuf[x] = 0;
+			if (vid_3dscale > 1 && *pbuf == TRANSPARENT_COLOR)
+			{	// 3D view area: left to the 3D picture
+				pos++;
+				continue;
+			}
 			*pbuf = mainTransTable[(*pos)+(*pbuf)];
 			pos++;
 //			pbuf[x] = mainTransTable[((170+(rand() % 6))*256)+pbuf[x]];

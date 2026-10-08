@@ -1,0 +1,8 @@
+Copy here the whole contents of the data1 folder of your Hexen II
+installation (GOG version): pak0.pak, pak1.pak, progs.dat, progs2.dat,
+strings.txt, hexen.rc and the rest.
+
+Optional music: copy the music folder of the installation (Track02.ogg ...)
+into this folder too, so that it becomes data1/music.
+
+Upper or lower case names do not matter: the game renames them on start.

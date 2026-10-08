@@ -72,6 +72,9 @@ static void M_MultiPlayer_Key (int key);
 static void M_Setup_Key (int key);
 static void M_Net_Key (int key);
 static void M_Options_Key (int key);
+static void M_Menu_Cheats_f (void);
+static void M_Cheats_Draw (void);
+static void M_Cheats_Key (int key);
 static void M_Keys_Key (int key);
 static void M_Video_Key (int key);
 static void M_Help_Key (int key);
@@ -1837,6 +1840,7 @@ enum
 	OPT_USEMOUSE,
 	OPT_CROSSHAIR,
 	OPT_CHASE_ACTIVE,
+	OPT_CHEATS,
 #ifdef GLQUAKE
 	OPT_OPENGL,
 #endif
@@ -2093,6 +2097,8 @@ static void M_Options_Draw (void)
 	M_Print (16 + (12 * 8), 60 + 8*OPT_CHASE_ACTIVE,	"Chase Mode");
 	M_DrawCheckbox (220, 60 + 8*OPT_CHASE_ACTIVE, chase_active.integer);
 
+	M_Print (16 + (16 * 8), 60 + 8*OPT_CHEATS,	"Cheats");
+
 	if (vid_menudrawfn)
 		M_Print (16 + (11 * 8), 60 + 8*OPT_VIDEO,	"Video Modes");
 
@@ -2128,6 +2134,9 @@ static void M_Options_Key (int k)
 			M_Menu_OpenGL_f ();
 			break;
 #endif
+		case OPT_CHEATS:
+			M_Menu_Cheats_f ();
+			break;
 		case OPT_VIDEO:
 			M_Menu_Video_f ();
 			break;
@@ -2178,6 +2187,139 @@ static void M_Options_Key (int k)
 			options_cursor = OPT_VIDEO - 1;
 		else
 			options_cursor = 0;
+	}
+}
+
+
+//=============================================================================
+/* CHEATS MENU
+ * The console needs a keyboard, which handhelds do not have, so the usual
+ * cheats are offered here. Like typing them, they only work in a single
+ * player game on Hard or easier. The on/off marks are read from the player
+ * itself, so they are always right. */
+
+enum
+{
+	CHT_GOD = 0,
+	CHT_NOCLIP,
+	CHT_NOTARGET,
+	CHT_HEALTH,
+	CHT_WEAPONS,
+	CHT_ITEMS,
+	CHT_ARTIFACTS,
+	CHEAT_ITEMS
+};
+
+static int	cheats_cursor;
+
+static qboolean M_Cheats_Allowed (void)
+{
+	return (sv.active && cls.state == ca_connected && sv_player != NULL &&
+		!deathmatch.integer && !coop.integer && skill.integer <= 2);
+}
+
+static void M_Menu_Cheats_f (void)
+{
+	Key_SetDest (key_menu);
+	m_state = m_cheats;
+	m_entersound = true;
+}
+
+static void M_Cheats_Draw (void)
+{
+	static const char *labels[CHEAT_ITEMS] =
+	{
+		"God mode",
+		"No clip",
+		"No target",
+		"Health to 200",
+		"All weapons + mana",
+		"Weapons, mana, items",
+		"20 of each artifact"
+	};
+	char	buf[16];
+	int	i;
+
+	ScrollTitle("gfx/menu/title3.lmp");
+
+	if (!M_Cheats_Allowed ())
+	{
+		M_PrintWhite (32, 76, "Cheats need a single player");
+		M_PrintWhite (32, 92, "game on Hard or easier.");
+		return;
+	}
+
+//	the labels end where the options menu labels end (22 characters wide)
+	for (i = 0; i < CHEAT_ITEMS; i++)
+		M_Print (16 + (22 - (int)strlen(labels[i])) * 8, 60 + 8*i, labels[i]);
+
+	M_DrawCheckbox (220, 60 + 8*CHT_GOD, ((int)sv_player->v.flags & FL_GODMODE) != 0);
+	M_DrawCheckbox (220, 60 + 8*CHT_NOCLIP, sv_player->v.movetype == MOVETYPE_NOCLIP);
+	M_DrawCheckbox (220, 60 + 8*CHT_NOTARGET, ((int)sv_player->v.flags & FL_NOTARGET) != 0);
+	q_snprintf (buf, sizeof(buf), "%d", (int)sv_player->v.health);
+	M_Print (220, 60 + 8*CHT_HEALTH, buf);
+
+	M_PrintWhite (24, 60 + 8*CHEAT_ITEMS + 16, "Weapons and items arrive");
+	M_PrintWhite (24, 60 + 8*CHEAT_ITEMS + 24, "when you leave the menu.");
+
+	// cursor
+	M_DrawCharacter (200, 60 + 8*cheats_cursor, 12 + ((int)(realtime*4) & 1));
+}
+
+static void M_Cheats_Key (int k)
+{
+	switch (k)
+	{
+	case K_ESCAPE:
+		M_Menu_Options_f ();
+		break;
+
+	case K_UPARROW:
+		S_LocalSound ("raven/menu1.wav");
+		cheats_cursor--;
+		if (cheats_cursor < 0)
+			cheats_cursor = CHEAT_ITEMS - 1;
+		break;
+
+	case K_DOWNARROW:
+		S_LocalSound ("raven/menu1.wav");
+		cheats_cursor++;
+		if (cheats_cursor >= CHEAT_ITEMS)
+			cheats_cursor = 0;
+		break;
+
+	case K_ENTER:
+	case K_SPACE:
+		if (!M_Cheats_Allowed ())
+			break;
+		S_LocalSound ("raven/menu1.wav");
+		switch (cheats_cursor)
+		{
+		case CHT_GOD:
+			Cbuf_AddText ("god\n");
+			break;
+		case CHT_NOCLIP:
+			Cbuf_AddText ("noclip\n");
+			break;
+		case CHT_NOTARGET:
+			Cbuf_AddText ("notarget\n");
+			break;
+		case CHT_HEALTH:
+			Cbuf_AddText ("give h 200\n");
+			break;
+		case CHT_WEAPONS:
+			Cbuf_AddText ("impulse 9\n");
+			break;
+		case CHT_ITEMS:
+			Cbuf_AddText ("impulse 43\n");
+			break;
+		case CHT_ARTIFACTS:
+			Cbuf_AddText ("impulse 299\n");
+			break;
+		default:
+			break;
+		}
+		break;
 	}
 }
 
@@ -3479,6 +3621,7 @@ static void M_Quit_Key (int key)
 	switch (key)
 	{
 	case K_ESCAPE:
+	case K_CTRL:	/* Miyoo: B button = no */
 	case 'n':
 	case 'N':
 		if (wasInMenus)
@@ -3494,6 +3637,8 @@ static void M_Quit_Key (int key)
 		}
 		break;
 
+	case K_ENTER:	/* Miyoo: Start = yes */
+	case K_SPACE:	/* Miyoo: A button = yes */
 	case 'Y':
 	case 'y':
 		Key_SetDest (key_console);
@@ -3530,7 +3675,7 @@ static void M_Quit_Draw (void)
 			{
 				MaxLines = MAX_LINES2_MP;
 				LineText = Credit2TextMP;
-				CDAudio_Play (12, false);
+				BGM_PlayCDtrack (12, false);	/* Miyoo: also from music/track12.ogg */
 			}
 			else
 			{
@@ -5076,6 +5221,10 @@ void M_Draw (void)
 		M_Options_Draw ();
 		break;
 
+	case m_cheats:
+		M_Cheats_Draw ();
+		break;
+
 #ifdef GLQUAKE
 	case m_opengl:
 		M_OpenGL_Draw ();
@@ -5206,6 +5355,10 @@ void M_Keydown (int key)
 		M_Options_Key (key);
 		return;
 
+	case m_cheats:
+		M_Cheats_Key (key);
+		return;
+
 #ifdef GLQUAKE
 	case m_opengl:
 		M_OpenGL_Key (key);
@@ -5286,8 +5439,7 @@ static void BGM_RestartMusic (void)
 	}
 	else if (q_strcasecmp(bgmtype.string,"cd") == 0)
 	{
-		BGM_Stop();
-		CDAudio_Play ((byte)cl.cdtrack, true);
+		BGM_PlayCDtrack ((byte)cl.cdtrack, true);	/* Miyoo: CD or music/trackNN.ogg */
 	}
 	else
 	{

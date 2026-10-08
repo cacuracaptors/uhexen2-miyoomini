@@ -66,6 +66,8 @@ qboolean	r_dowarp, r_dowarpold, r_viewchanged;
 mvertex_t	*r_pcurrentvertbase;
 
 int		c_surf;
+static double	r_perf_t;
+static int	r_perf_last_surf;
 int		r_maxsurfsseen, r_maxedgesseen, r_cnumsurfs;
 qboolean	r_surfsonstack;
 int		r_clipflags;
@@ -261,6 +263,11 @@ void R_Init (void)
 	Cvar_RegisterVariable (&r_aliasmip);
 	Cvar_RegisterVariable (&r_wholeframe);
 	Cvar_RegisterVariable (&r_transwater);
+	Cvar_RegisterVariable (&r_transonepass);
+	Cvar_RegisterVariable (&r_fastloops);
+	Cvar_RegisterVariable (&r_mt);
+	Cvar_RegisterVariable (&r_mtsteal);
+	Cvar_RegisterVariable (&r_occlude);
 	Cvar_RegisterVariable (&r_texture_external);
 	Cvar_RegisterVariable (&r_dynamic);
 
@@ -346,13 +353,14 @@ void R_NewMap (void)
 
 	if (r_cnumsurfs > NUMSTACKSURFACES)
 	{
-		surfaces = (surf_t *) Hunk_AllocName (r_cnumsurfs * sizeof(surf_t), "surfaces");
-		surface_p = surfaces;
-		surf_max = &surfaces[r_cnumsurfs];
-		r_surfsonstack = false;
 	// surface 0 doesn't really exist; it's just a dummy because index 0
-	// is used to indicate no edge attached to surface
-		surfaces--;
+	// is used to indicate no edge attached to surface. Miyoo: it gets real
+	// memory, because the translucent pass copies it back and forth (the
+	// original pointed it one element before the allocation).
+		surfaces = (surf_t *) Hunk_AllocName ((r_cnumsurfs + 1) * sizeof(surf_t), "surfaces");
+		surface_p = &surfaces[1];
+		surf_max = &surfaces[r_cnumsurfs + 1];
+		r_surfsonstack = false;
 #if id386
 		R_SurfacePatch ();
 #endif
@@ -362,7 +370,7 @@ void R_NewMap (void)
 		r_surfsonstack = true;
 	}
 
-	SaveSurfacesSize = r_cnumsurfs * sizeof(surf_t);
+	SaveSurfacesSize = (r_cnumsurfs + 1) * sizeof(surf_t);	/* surface 0 is copied too */
 	SaveSurfaces = (surf_t *) Hunk_AllocName (SaveSurfacesSize, "surfback");
 
 	r_maxedgesseen = 0;
@@ -624,6 +632,13 @@ static void R_PrepareAlias (void)
 	// trivial accept status
 	if (R_AliasCheckBBox ())
 	{
+		if (R_AliasOccluded ())
+		{	/* Miyoo: wholly behind what is already drawn: no pixel would change */
+			if (vid_perf)
+				VID_PerfCount (PC_MOCCL, 1);
+			return;
+		}
+
 		VectorCopy(currententity->origin, adjust_origin);
 		adjust_origin[2] += (currententity->model->mins[2] + currententity->model->maxs[2]) / 2;
 		j = R_LightPoint (adjust_origin);
@@ -707,6 +722,7 @@ static void R_DrawEntitiesOnList (void)
 			}
 			VectorCopy (currententity->origin, r_entorigin);
 			VectorSubtract (r_origin, r_entorigin, modelorg);
+			D_PolyMT_Flush ();	/* Miyoo: the models before it are finished first */
 			R_DrawSprite ();
 			break;
 
@@ -740,6 +756,7 @@ static void R_DrawEntitiesOnList (void)
 			{
 				VectorCopy (currententity->origin, r_entorigin);
 				VectorSubtract (r_origin, r_entorigin, modelorg);
+				D_PolyMT_Flush ();	/* Miyoo: the models before it are finished first */
 				R_DrawSprite ();
 			}
 			break;
@@ -850,7 +867,10 @@ static void R_DrawViewModel (void)
 	R_AliasDrawModel (&r_viewlighting);
 
 	if (r_fov_greater_than_90)
+	{
+		D_PolyMT_Flush ();	/* Miyoo: the view tables are rebuilt next */
 		SCR_CalcFOV(scr_fov.value);
+	}
 
 	r_viewlighting.plightvec = NULL; /* silence -Wdangling-pointer warnings */
 }
@@ -1114,12 +1134,14 @@ static void R_EdgeDrawing (qboolean Translucent)
  * but the C-only code surely does not..  */
 #if !id386
 static edge_t	ledges[NUMSTACKEDGES + ((CACHE_SIZE - 1) / sizeof(edge_t)) + 1];
-static surf_t	lsurfs[NUMSTACKSURFACES + ((CACHE_SIZE - 1) / sizeof(surf_t)) + 1];
+static surf_t	lsurfs[NUMSTACKSURFACES + ((CACHE_SIZE - 1) / sizeof(surf_t)) + 2];
 #else
 	edge_t	ledges[NUMSTACKEDGES + ((CACHE_SIZE - 1) / sizeof(edge_t)) + 1];
-	surf_t	lsurfs[NUMSTACKSURFACES + ((CACHE_SIZE - 1) / sizeof(surf_t)) + 1];
+	surf_t	lsurfs[NUMSTACKSURFACES + ((CACHE_SIZE - 1) / sizeof(surf_t)) + 2];
 #endif
 	int	EdgesSize, SurfacesSize;
+	surf_t	*ps;
+	double	pt = PERF_START ();
 
 	if (!Translucent)
 	{
@@ -1134,7 +1156,11 @@ static surf_t	lsurfs[NUMSTACKSURFACES + ((CACHE_SIZE - 1) / sizeof(surf_t)) + 1]
 
 		if (r_surfsonstack)
 		{
-			surfaces = (surf_t *) (((intptr_t)&lsurfs[0] + CACHE_SIZE - 1) & ~(CACHE_SIZE - 1));
+		// Miyoo: aligned from lsurfs[1], so that surface 0 (one element
+		// before) is still inside lsurfs. The original started at lsurfs[0],
+		// and the translucent pass wrote surface 0 over the variables in
+		// memory just before the array.
+			surfaces = (surf_t *) (((intptr_t)&lsurfs[1] + CACHE_SIZE - 1) & ~(CACHE_SIZE - 1));
 			surf_max = &surfaces[r_cnumsurfs];
 		// surface 0 doesn't really exist; it's just a dummy because
 		// index 0 is used to indicate no edge attached to surface
@@ -1172,6 +1198,8 @@ static surf_t	lsurfs[NUMSTACKSURFACES + ((CACHE_SIZE - 1) / sizeof(surf_t)) + 1]
 		}
 
 		R_DrawBEntitiesOnList ();
+		PERF_STOP (pt, PF_WBUILD);
+		pt = PERF_START ();
 
 		SaveSurfacesCount = surface_p - surfaces;
 		SurfacesSize = SaveSurfacesCount * sizeof(surf_t);
@@ -1186,9 +1214,20 @@ static surf_t	lsurfs[NUMSTACKSURFACES + ((CACHE_SIZE - 1) / sizeof(surf_t)) + 1]
 		else
 		{
 			AllowTranslucency = true;
-			memcpy(SaveEdges,r_edges,EdgesSize);
-			memcpy(SaveSurfaces,surfaces,SurfacesSize);
+		// Miyoo: the copy is only used by the translucent pass, so it is
+		// skipped when no translucent surface was emitted this frame
+			for (ps = &surfaces[2] ; ps < surface_p ; ps++)
+			{
+				if (ps->flags & SURF_TRANSLUCENT)
+					break;
+			}
+			if (ps < surface_p)
+			{
+				memcpy(SaveEdges,r_edges,EdgesSize);
+				memcpy(SaveSurfaces,surfaces,SurfacesSize);
+			}
 		}
+		PERF_STOP (pt, PF_WSAVE);
 
 		if (r_dspeeds.integer)
 		{
@@ -1204,9 +1243,82 @@ static surf_t	lsurfs[NUMSTACKSURFACES + ((CACHE_SIZE - 1) / sizeof(surf_t)) + 1]
 		}
 	}
 
+	pt = PERF_START ();
 	R_ScanEdges (Translucent);
+	if (!Translucent)
+		PERF_STOP (pt, PF_WSCAN);
 }
 
+
+// DIAGNOSTIC (temporary): "-tcheck" draws every frame three times, the
+// original way, with r_transonepass, and the original way again, and compares
+// checksums of the finished 3D view. "unstable" counts frames where the two
+// original renders differ (the test itself would then be unreliable).
+static void R_RenderView_ (void);
+static int		r_tcheck = -1;
+static unsigned int	tc_frames, tc_trans, tc_diff, tc_unstable, tc_fallback;
+
+static unsigned int R_ViewChecksum (void)
+{
+	unsigned int	h = 2166136261u;
+	int		x, y;
+	const byte	*p;
+
+	for (y = scr_vrect3d.y; y < scr_vrect3d.y + scr_vrect3d.height; y++)
+	{
+		p = vid.buffer + y * vid.rowbytes + scr_vrect3d.x;
+		for (x = 0; x < scr_vrect3d.width; x++)
+			h = (h ^ p[x]) * 16777619u;
+	}
+	return h;
+}
+
+static void R_RenderView_TCheck (void)
+{
+	int		keep = r_transonepass.integer, keepf = r_fastloops.integer, keepm = r_mt.integer;
+	unsigned int	a, b, c;
+	qboolean	had_trans, fallback;
+
+	r_transonepass.integer = 0;
+	r_fastloops.integer = 0;
+	r_mt.integer = 0;
+	R_RenderView_ ();
+	a = R_ViewChecksum ();
+
+	R_PushDlights ();	/* the frame counter moved: mark the lit surfaces again */
+	r_transonepass.integer = 1;
+	r_fastloops.integer = 1;
+	r_mt.integer = 1;
+	R_RenderView_ ();
+	b = R_ViewChecksum ();
+	had_trans = (TransCount && AllowTranslucency);
+	fallback = !r_tspans_ready;
+
+	R_PushDlights ();
+	r_transonepass.integer = 0;
+	r_fastloops.integer = 0;
+	r_mt.integer = 0;
+	R_RenderView_ ();
+	c = R_ViewChecksum ();
+
+	r_transonepass.integer = keep;
+	r_fastloops.integer = keepf;
+	r_mt.integer = keepm;
+
+	tc_frames++;
+	if (had_trans)
+		tc_trans++;
+	if (had_trans && fallback)
+		tc_fallback++;
+	if (a != c)
+		tc_unstable++;
+	else if (b != c)
+		tc_diff++;
+	if ((tc_frames % 120) == 0)
+		fprintf (stderr, "tcheck: %u frames, %u with translucent surfaces (%u used the second pass), "
+				"%u differ, %u unstable\n",
+				tc_frames, tc_trans, tc_fallback, tc_diff, tc_unstable);
+}
 
 /*
 ================
@@ -1229,6 +1341,7 @@ static void R_RenderView_ (void)
 			r_time1 = Sys_DoubleTime ();
 	}
 
+	r_perf_t = PERF_START ();
 	R_SetupFrame ();
 
 #ifdef PASSAGES
@@ -1236,6 +1349,7 @@ static void R_RenderView_ (void)
 #else
 	R_MarkLeaves ();	// done here so we know if we're in water
 #endif
+	PERF_STOP (r_perf_t, PF_SETUP);
 
 // make FDIV fast. This reduces timing precision after we've been running for a
 // while, so we don't do it globally.  This also sets chop mode, and we do it
@@ -1248,18 +1362,22 @@ static void R_RenderView_ (void)
 
 	if (!r_dspeeds.integer)
 	{
+		r_perf_t = PERF_START ();
 		VID_UnlockBuffer ();
 		S_ExtraUpdate ();	// don't let sound get messed up if going slow
 		VID_LockBuffer ();
+		PERF_STOP (r_perf_t, PF_SNDX);
 	}
 
-	R_EdgeDrawing (false);
+	R_EdgeDrawing (false);	/* timed inside: PF_WBUILD, PF_WSAVE, PF_WSCAN */
 
 	if (!r_dspeeds.integer)
 	{
+		r_perf_t = PERF_START ();
 		VID_UnlockBuffer ();
 		S_ExtraUpdate ();	// don't let sound get messed up if going slow
 		VID_LockBuffer ();
+		PERF_STOP (r_perf_t, PF_SNDX);
 	}
 
 	if (r_dspeeds.integer)
@@ -1268,9 +1386,29 @@ static void R_RenderView_ (void)
 		de_time1 = se_time2;
 	}
 
+	r_perf_t = PERF_START ();
+	D_PolyMT_Begin (0);	/* Miyoo: the second core draws the lower rows of the models */
 	R_DrawEntitiesOnList ();
+	D_PolyMT_End ();
+	PERF_STOP (r_perf_t, PF_MODELS);
+
+	r_perf_t = PERF_START ();
 	if (TransCount && AllowTranslucency)
-		R_EdgeDrawing (true);
+	{
+		if (r_tspans_ready)
+		{	/* the spans were built during the opaque pass: just draw them */
+			double pt = PERF_START ();
+			D_DrawSurfaces (true);
+			PERF_STOP (pt, PF_TSPANS);
+		}
+		else
+		{
+			R_EdgeDrawing (true);
+			if (vid_perf && r_transonepass.integer)
+				VID_PerfCount (PC_FALLBACK, 1);
+		}
+	}
+	PERF_STOP (r_perf_t, PF_TRANS);
 
 	if (r_dspeeds.integer)
 	{
@@ -1278,7 +1416,11 @@ static void R_RenderView_ (void)
 		dv_time1 = de_time2;
 	}
 
+	r_perf_t = PERF_START ();
+	D_PolyMT_Begin (1);	/* and of the weapon */
 	R_DrawViewModel ();
+	D_PolyMT_End ();
+	PERF_STOP (r_perf_t, PF_VMODEL);
 
 	if (r_dspeeds.integer)
 	{
@@ -1286,13 +1428,28 @@ static void R_RenderView_ (void)
 		dp_time1 = Sys_DoubleTime ();
 	}
 
+	r_perf_t = PERF_START ();
 	R_DrawParticles ();
+	PERF_STOP (r_perf_t, PF_PARTS);
 
 	if (r_dspeeds.integer)
 		dp_time2 = Sys_DoubleTime ();
 
+	r_perf_t = PERF_START ();
 	if (r_dowarp)
 		D_WarpScreen ();
+	PERF_STOP (r_perf_t, PF_WARP);
+
+	if (vid_perf)
+	{
+		VID_PerfCount (PC_WPOLY, r_polycount);
+		VID_PerfCount (PC_EPOLY, r_drawnpolycount);
+		VID_PerfCount (PC_AMODELS, r_amodels_drawn);
+		VID_PerfCount (PC_SURF, c_surf - r_perf_last_surf);
+		r_perf_last_surf = c_surf;
+		VID_PerfCount (PC_TLINES, TransCount);
+	}
+	D_MT_EndFrame ();
 
 	V_SetContentsColor (r_viewleaf->contents);
 
@@ -1335,6 +1492,14 @@ void R_RenderView (void)
 */
 	if ( (intptr_t)(&r_warpbuffer) & 3 )
 		Sys_Error ("Globals are missaligned");
+
+	if (r_tcheck < 0)
+		r_tcheck = (COM_CheckParm ("-tcheck") != 0);
+	if (r_tcheck)
+	{
+		R_RenderView_TCheck ();
+		return;
+	}
 
 	R_RenderView_ ();
 }

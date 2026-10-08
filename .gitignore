@@ -1,0 +1,8 @@
+# build output
+/build-miyoo/
+*.o
+*.a
+/engine/hexen2/hexen2
+# left behind by patches
+*.orig
+*.rej

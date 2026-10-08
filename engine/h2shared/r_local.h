@@ -80,6 +80,25 @@ extern cvar_t	r_maxedges;
 extern cvar_t	r_numedges;
 extern cvar_t	r_aliasmip;
 extern cvar_t	r_transwater;
+extern cvar_t	r_mt;		/* Miyoo: 1 = the second core draws part of the rows */
+void D_MT_Drain (void);
+qboolean D_MT_Available (void);			/* the second core can take work now */
+void D_MT_PostCall (void (*fn)(void *), void *arg);	/* run fn(arg) on the second core */
+void D_MT_PostUrgent (void (*fn)(void *), void *arg);	/* run it before the queued jobs */
+void D_MT_WaitUrgent (void);
+extern qboolean	r_mt_defer_ok;		/* Miyoo: lit textures may be left to the second core */
+extern void	*r_mt_deferred;		/* the one left by the last D_CacheSurface, or NULL */
+void R_BuildDeferred (void *arg);
+void R_LitPoolReset (void);
+extern qboolean	r_mt_deferred_dep;	/* Miyoo: it must stay after earlier jobs (d_edge.c) */
+qboolean D_MT_Pending (unsigned int mark);
+extern cvar_t	r_mtsteal;
+extern qboolean	r_surf_inplace;		/* Miyoo: R_DrawSurface rewrites a block already in use this frame... */
+extern unsigned int	r_surf_mark;		/* ...which the second core may still read until this mark */
+void D_MT_WaitMark (unsigned int mark);
+extern cvar_t	r_fastloops;	/* Miyoo: 0 = original water drawing loops */
+extern cvar_t	r_transonepass;	/* Miyoo: build the translucent spans during the opaque pass */
+extern qboolean	r_tspans_ready;	/* set when every translucent span of the frame is in its surface */
 #ifdef H2W
 extern cvar_t	r_teamcolor;
 #endif
@@ -211,11 +230,16 @@ extern	int	*pfrustum_indexes[4];
 #define	NEAR_CLIP	0.01
 
 ASM_LINKAGE_BEGIN
-extern	int	ubasestep, errorterm, erroradjustup, erroradjustdown;
+#ifndef MT_TLS
+/* Miyoo: the span drawing state is per thread, so that the second core can
+ * draw part of the rows of a surface while the first core does the rest */
+#define MT_TLS	__thread
+#endif
+extern	MT_TLS int	ubasestep, errorterm, erroradjustup, erroradjustdown;	/* model edges (d_polyse.c) */
 extern	int	vstartscan;
 
-extern	fixed16_t	sadjust, tadjust;
-extern	fixed16_t	bbextents, bbextentt;
+extern	MT_TLS fixed16_t	sadjust, tadjust;
+extern	MT_TLS fixed16_t	bbextents, bbextentt;
 
 ASM_LINKAGE_END
 
@@ -247,6 +271,8 @@ extern	finalvert_t	*pfinalverts;
 extern	auxvert_t	*pauxverts;
 
 qboolean R_AliasCheckBBox (void);
+qboolean R_AliasOccluded (void);	/* Miyoo: wholly hidden by the world already drawn */
+extern cvar_t	r_occlude;
 
 //=========================================================
 // turbulence stuff

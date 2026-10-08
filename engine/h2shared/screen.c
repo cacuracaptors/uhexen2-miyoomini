@@ -73,6 +73,10 @@
 static qboolean	scr_initialized;	// ready to draw
 
 vrect_t		scr_vrect;
+vrect_t		scr_vrect3d;
+int		vid_3dscale = 1;
+int		vid_fade3d;
+static double	scr_perf_t;
 //vrect_t		*pconupdate;
 
 /* these are only functional in the software renderer */
@@ -407,7 +411,15 @@ static void SCR_CalcRefdef (void)
 	vrect.height = vid.height;
 
 	R_SetVrect (&vrect, &scr_vrect, sb_lines);
-	r_refdef.vrect = scr_vrect;
+	scr_vrect3d = scr_vrect;
+	if (vid_3dscale > 1)
+	{
+		scr_vrect3d.x *= vid_3dscale;
+		scr_vrect3d.y *= vid_3dscale;
+		scr_vrect3d.width *= vid_3dscale;
+		scr_vrect3d.height *= vid_3dscale;
+	}
+	r_refdef.vrect = scr_vrect3d;
 	r_refdef.fov_x = AdaptFovx (scr_fov.value, r_refdef.vrect.width, r_refdef.vrect.height);
 	r_refdef.fov_y = CalcFovy (r_refdef.fov_x, r_refdef.vrect.width, r_refdef.vrect.height);
 
@@ -417,14 +429,18 @@ static void SCR_CalcRefdef (void)
 		scr_con_current = vid.height;
 
 // notify the refresh of the change
+	VID_Use3D ();
 	R_ViewChanged (vid.aspect);
+	VID_Use2D ();
 }
 
 void SCR_CalcFOV (float fov)
 {
 	r_refdef.fov_x = AdaptFovx (fov, r_refdef.vrect.width, r_refdef.vrect.height);
 	r_refdef.fov_y = CalcFovy (r_refdef.fov_x, r_refdef.vrect.width, r_refdef.vrect.height);
+	VID_Use3D ();
 	R_ViewChanged (vid.aspect);
+	VID_Use2D ();
 }
 
 //=============================================================================
@@ -1011,12 +1027,14 @@ int SCR_ModalMessage (const char *text)
 	{
 		key_count = -1;		// wait for a key down and up
 		Sys_SendKeyEvents ();
-	} while (key_lastpress != 'y' && key_lastpress != 'n' && key_lastpress != K_ESCAPE);
+	} while (key_lastpress != 'y' && key_lastpress != 'n' && key_lastpress != K_ESCAPE &&
+		key_lastpress != K_ENTER && key_lastpress != K_SPACE && key_lastpress != K_CTRL);
+	/* Miyoo: Start / A = yes, B / Menu = no */
 
 	scr_fullupdate = 0;
 	SCR_UpdateScreen ();
 
-	return key_lastpress == 'y';
+	return key_lastpress == 'y' || key_lastpress == K_ENTER || key_lastpress == K_SPACE;
 }
 
 //=============================================================================
@@ -1358,9 +1376,17 @@ void SCR_UpdateScreen (void)
 	if (!cl.intermission)
 #endif
 	{
+		scr_perf_t = PERF_START ();
+		if (vid_3dscale > 1)
+		{	// split mode: the 3D view is drawn into its own, bigger picture
+			VID_ClearUIView ();
+			VID_Use3D ();
+		}
 		VID_LockBuffer ();
 		V_RenderView ();
 		VID_UnlockBuffer ();
+		VID_Use2D ();
+		PERF_STOP (scr_perf_t, PF_VIEW3D);
 	}
 
 	D_EnableBackBufferAccess ();	// of all overlay stuff if drawing directly

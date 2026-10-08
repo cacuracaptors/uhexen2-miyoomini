@@ -1164,6 +1164,12 @@ void Inv_Update(qboolean force)
 		else
 			cl.v.inventory = 0;
 
+		/* Miyoo: redraw the bar, whose middle icon shows this item. The
+		 * software renderer redraws the bar only when told, and nothing
+		 * else tells it here: the new item never showed (the icon stayed
+		 * on the previous one until health or mana changed). */
+		Sbar_Changed ();
+
 		if (!force)
 		{
 			if (scr_viewsize.integer < 100)

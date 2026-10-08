@@ -45,6 +45,9 @@ static void D_SpriteDrawSpans (sspan_t *pspan)
 	float		sdivz8stepu, tdivz8stepu, zi8stepu;
 	byte		btemp;
 	short		*pz;
+	/* Miyoo: the loop stores bytes, which (with -fno-strict-aliasing) forces
+	 * every global it reads to be reloaded at each pixel: work on copies */
+	const int	cw = cachewidth;
 
 	sstep = 0;	// keep compiler happy
 	tstep = 0;	// ditto
@@ -161,7 +164,7 @@ static void D_SpriteDrawSpans (sspan_t *pspan)
 
 			do
 			{
-				btemp = *(pbase + (s >> 16) + (t >> 16) * cachewidth);
+				btemp = *(pbase + (s >> 16) + (t >> 16) * cw);
 				if (btemp != 255)
 				{
 					if (*pz <= (izi >> 16))
@@ -200,6 +203,10 @@ static void D_SpriteDrawSpansT (sspan_t *pspan)
 	float		sdivz8stepu, tdivz8stepu, zi8stepu;
 	byte		btemp;
 	short		*pz;
+	/* Miyoo: the loop stores bytes, which (with -fno-strict-aliasing) forces
+	 * every global it reads to be reloaded at each pixel: work on copies */
+	const int	cw = cachewidth;
+	const byte	*const mtt = mainTransTable;
 
 	sstep = 0;	// keep compiler happy
 	tstep = 0;	// ditto
@@ -316,13 +323,13 @@ static void D_SpriteDrawSpansT (sspan_t *pspan)
 
 			do
 			{
-				btemp = *(pbase + (s >> 16) + (t >> 16) * cachewidth);
+				btemp = *(pbase + (s >> 16) + (t >> 16) * cw);
 				if (btemp != 255)
 				{
 					if (*pz <= (izi >> 16))
 					{
 						//*pz = izi >> 16;
-						*pdest = mainTransTable[(btemp<<8) + (*pdest)];
+						*pdest = mtt[(btemp<<8) + (*pdest)];
 					}
 				}
 
@@ -355,6 +362,10 @@ static void D_SpriteDrawSpansT2 (sspan_t *pspan)
 	float		sdivz8stepu, tdivz8stepu, zi8stepu;
 	byte		btemp;
 	short		*pz;
+	/* Miyoo: the loop stores bytes, which (with -fno-strict-aliasing) forces
+	 * every global it reads to be reloaded at each pixel: work on copies */
+	const int	cw = cachewidth;
+	const byte	*const mtt = mainTransTable;
 
 	sstep = 0;	// keep compiler happy
 	tstep = 0;	// ditto
@@ -471,13 +482,13 @@ static void D_SpriteDrawSpansT2 (sspan_t *pspan)
 
 			do
 			{
-				btemp = *(pbase + (s >> 16) + (t >> 16) * cachewidth);
+				btemp = *(pbase + (s >> 16) + (t >> 16) * cw);
 				if (btemp != 255)
 				{
 					if (*pz <= (izi >> 16))
 					{
 						//*pz = izi >> 16;
-						*pdest = (btemp & 0x1) ? mainTransTable[(btemp<<8) + (*pdest)] : btemp;
+						*pdest = (btemp & 0x1) ? mtt[(btemp<<8) + (*pdest)] : btemp;
 					}
 				}
 

@@ -267,6 +267,130 @@ texture_t *R_TextureAnimation (texture_t *base)
 }
 
 
+
+/*
+==============================================================================
+
+Miyoo: rebuilding a lit texture on both cores
+
+A surface lit by a dynamic light (the torch, a spell) has its texture rebuilt
+every frame. The columns of 16 texels are independent, so the second core
+builds the right half while the first core builds the left half. The block
+loops are the same as R_DrawSurfaceBlock8_mipN, with everything they read in
+locals and parameters instead of globals ("r_fastloops 0" brings the
+original loops back; "-tcheck" compares them).
+
+==============================================================================
+*/
+typedef struct
+{
+	const unsigned int	*lights;	/* blocklights */
+	int			lightwidth, numvblocks, sourcetstep, rowbytes, stepback;
+	const byte		*sourcemax, *basetptr, *colormap;
+	int			mip, blocksize, smax, soffset0, horzblockstep;
+	byte			*dest0;
+	int			u0, u1;		/* columns of this part */
+} surfjob_t;
+
+#define SURF_BLOCK_FAST(name, B, SH)						\
+static void name (const surfjob_t *c, const unsigned int *lightptr,		\
+		  const byte *psource, byte *prowdest)				\
+{										\
+	const byte	*const cmap = c->colormap;				\
+	const byte	*const sourcemax = c->sourcemax;			\
+	const int	lw = c->lightwidth, nv = c->numvblocks;			\
+	const int	st = c->sourcetstep, rb = c->rowbytes, sb = c->stepback; \
+	int		v, i, b, lightstep, lighttemp, light;			\
+	int		lightleft, lightright, lightleftstep, lightrightstep;	\
+										\
+	for (v = 0; v < nv; v++)						\
+	{									\
+		lightleft = lightptr[0];					\
+		lightright = lightptr[1];					\
+		lightptr += lw;							\
+		lightleftstep = (lightptr[0] - lightleft) >> SH;		\
+		lightrightstep = (lightptr[1] - lightright) >> SH;		\
+										\
+		for (i = 0; i < B; i++)						\
+		{								\
+			lighttemp = lightleft - lightright;			\
+			lightstep = lighttemp >> SH;				\
+										\
+			light = lightright;					\
+										\
+			for (b = B - 1; b >= 0; b--)				\
+			{							\
+				prowdest[b] = cmap[(light & 0xFF00) + psource[b]]; \
+				light += lightstep;				\
+			}							\
+										\
+			psource += st;						\
+			lightright += lightrightstep;				\
+			lightleft += lightleftstep;				\
+			prowdest += rb;						\
+		}								\
+										\
+		if (psource >= sourcemax)					\
+			psource -= sb;						\
+	}									\
+}
+
+SURF_BLOCK_FAST (R_SurfBlockFast_mip0, 16, 4)
+SURF_BLOCK_FAST (R_SurfBlockFast_mip1, 8, 3)
+SURF_BLOCK_FAST (R_SurfBlockFast_mip2, 4, 2)
+SURF_BLOCK_FAST (R_SurfBlockFast_mip3, 2, 1)
+
+static void R_SurfColumns (void *arg);
+
+/* Miyoo: a lit texture whose rebuilding (and the drawing of its surface) is
+ * left entirely to the second core: the job keeps its own copy of the light
+ * values, since blocklights is reused by the next surface */
+typedef struct
+{
+	surfjob_t	j;
+	unsigned int	lights[18*18];
+} litjob_t;
+
+#define	MT_LITPOOL	128
+static litjob_t	r_litpool[MT_LITPOOL];
+static int	r_litpool_n;
+qboolean	r_mt_defer_ok;		/* set by D_DrawSurfaces around D_CacheSurface */
+void		*r_mt_deferred;		/* set here when the texture was left to the second core */
+
+void R_LitPoolReset (void)	/* only once the second core has finished them all */
+{
+	r_litpool_n = 0;
+}
+
+qboolean	r_surf_inplace;		/* set by D_CacheSurface, see r_local.h */
+qboolean	r_mt_deferred_dep;	/* the deferred texture rewrites a block earlier jobs still read */
+unsigned int	r_surf_mark;
+
+void R_BuildDeferred (void *arg)
+{
+	R_SurfColumns (&((litjob_t *) arg)->j);
+}
+
+static void R_SurfColumns (void *arg)
+{
+	const surfjob_t	*c = (const surfjob_t *) arg;
+	int		u, soffset;
+
+	for (u = c->u0; u < c->u1; u++)
+	{
+	// the original steps soffset by blocksize and wraps it to 0 at smax;
+	// soffset0 and smax are multiples of blocksize, so this is the same
+		soffset = (c->soffset0 + u * c->blocksize) % c->smax;
+		switch (c->mip)
+		{
+		case 0: R_SurfBlockFast_mip0 (c, c->lights + u, c->basetptr + soffset, c->dest0 + u * c->horzblockstep); break;
+		case 1: R_SurfBlockFast_mip1 (c, c->lights + u, c->basetptr + soffset, c->dest0 + u * c->horzblockstep); break;
+		case 2: R_SurfBlockFast_mip2 (c, c->lights + u, c->basetptr + soffset, c->dest0 + u * c->horzblockstep); break;
+		default: R_SurfBlockFast_mip3 (c, c->lights + u, c->basetptr + soffset, c->dest0 + u * c->horzblockstep); break;
+		}
+	}
+}
+
 /*
 ===============
 R_DrawSurface
@@ -337,6 +461,65 @@ void R_DrawSurface (void)
 
 	pcolumndest = r_drawsurf.surfdat;
 
+	if (r_fastloops.integer && r_pixbytes == 1)
+	{
+		surfjob_t	mine, theirs;
+		double		pt = PERF_START ();
+
+		mine.lights = blocklights;
+		mine.lightwidth = r_lightwidth;
+		mine.numvblocks = r_numvblocks;
+		mine.sourcetstep = sourcetstep;
+		mine.rowbytes = surfrowbytes;
+		mine.stepback = r_stepback;
+		mine.sourcemax = r_sourcemax;
+		mine.basetptr = basetptr;
+		mine.colormap = (const byte *) vid.colormap;
+		mine.mip = r_drawsurf.surfmip;
+		mine.blocksize = blocksize;
+		mine.smax = smax;
+		mine.soffset0 = soffset;
+		mine.horzblockstep = horzblockstep;
+		mine.dest0 = pcolumndest;
+		mine.u0 = 0;
+		mine.u1 = r_numhblocks;
+	// when the second core is not too busy, it builds the whole texture and
+	// then draws the surface itself, so the first core goes on at once
+		if (r_mt_defer_ok && r_litpool_n < MT_LITPOOL &&
+		    (r_numvblocks + 1) * r_lightwidth <= 18*18)
+		{
+			litjob_t *L = &r_litpool[r_litpool_n++];
+			L->j = mine;
+			memcpy (L->lights, blocklights, (size_t) (r_numvblocks + 1) * r_lightwidth * sizeof(unsigned int));
+			L->j.lights = L->lights;
+			r_mt_deferred = L;
+			r_mt_deferred_dep = r_surf_inplace && D_MT_Pending (r_surf_mark);
+			PERF_STOP (pt, PF_SBUILD);
+			return;
+		}
+	// writing here: jobs of the second core still reading this block
+	// (an earlier piece of the surface) must finish first
+		if (r_surf_inplace)
+			D_MT_WaitMark (r_surf_mark);
+	// the second core takes the right half (a half each, so they rarely
+	// write the same memory line) as soon as it finishes the job it is on,
+	// ahead of its queued rows; small textures are not worth it
+		if (r_numhblocks >= 4 && D_MT_Available ())
+		{
+			theirs = mine;
+			mine.u1 = theirs.u0 = r_numhblocks / 2;
+			D_MT_PostUrgent (R_SurfColumns, &theirs);
+			R_SurfColumns (&mine);
+			D_MT_WaitUrgent ();	/* the texture must be complete before it is drawn */
+		}
+		else
+			R_SurfColumns (&mine);
+		PERF_STOP (pt, PF_SBUILD);
+		return;
+	}
+
+	if (r_surf_inplace)	/* Miyoo: see above */
+		D_MT_WaitMark (r_surf_mark);
 	for (u = 0; u < r_numhblocks; u++)
 	{
 		r_lightptr = blocklights + u;

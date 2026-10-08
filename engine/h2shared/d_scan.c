@@ -26,10 +26,14 @@
 #include "d_local.h"
 
 ASM_LINKAGE_BEGIN
-unsigned char	*r_turb_pbase, *r_turb_pdest;
-fixed16_t		r_turb_s, r_turb_t, r_turb_sstep, r_turb_tstep;
-int				*r_turb_turb;
-int				r_turb_spancount;
+static MT_TLS unsigned char	*r_turb_pbase, *r_turb_pdest;
+static MT_TLS fixed16_t		r_turb_s, r_turb_t, r_turb_sstep, r_turb_tstep;
+static MT_TLS int		*r_turb_turb;
+
+static int D_SpanStartIzi (const espan_t *pspan);
+
+cvar_t	r_fastloops = {"r_fastloops", "1", CVAR_NONE};	/* Miyoo: 0 = original water loops (to compare) */
+static MT_TLS int		r_turb_spancount;
 byte			scanList[SCAN_SIZE];
 int				ZScanCount;
 ASM_LINKAGE_END
@@ -60,26 +64,26 @@ void D_WarpScreen (void)
 	w = r_refdef.vrect.width;
 	h = r_refdef.vrect.height;
 
-	wratio = w / (float)scr_vrect.width;
-	hratio = h / (float)scr_vrect.height;
+	wratio = w / (float)scr_vrect3d.width;
+	hratio = h / (float)scr_vrect3d.height;
 
-	for (v = 0; v < scr_vrect.height + AMP2*2; v++)
+	for (v = 0; v < scr_vrect3d.height + AMP2*2; v++)
 	{
 		rowptr[v] = d_viewbuffer + (r_refdef.vrect.y * screenwidth) +
 				 (screenwidth * (int)((float)v * hratio * h / (h + AMP2 * 2)));
 	}
 
-	for (u = 0; u < scr_vrect.width + AMP2*2; u++)
+	for (u = 0; u < scr_vrect3d.width + AMP2*2; u++)
 	{
 		column[u] = r_refdef.vrect.x +
 				(int)((float)u * wratio * w / (w + AMP2 * 2));
 	}
 
 	turb = intsintable + ((int)(cl.time*SPEED) & (CYCLE-1));
-	dest = vid.buffer + scr_vrect.y * vid.rowbytes + scr_vrect.x;
+	dest = vid.buffer + scr_vrect3d.y * vid.rowbytes + scr_vrect3d.x;
 
-	scr_width = scr_vrect.width;
-	scr_height = scr_vrect.height;
+	scr_width = scr_vrect3d.width;
+	scr_height = scr_vrect3d.height;
 	rowbytes = vid.rowbytes;
 	for (v = 0; v < scr_height; v++, dest += rowbytes)
 	{
@@ -106,15 +110,27 @@ D_DrawTurbulent8Span
 static void D_DrawTurbulent8Span (void)
 {
 	int		sturb, tturb;
+	/* Miyoo: the same loop on local copies of the r_turb_* globals (a byte
+	 * store made the compiler reload and store all of them at each pixel) */
+	int		s = r_turb_s, t = r_turb_t, n = r_turb_spancount;
+	const int	sstep = r_turb_sstep, tstep = r_turb_tstep;
+	const int	*const turb = r_turb_turb;
+	const byte	*const pbase = r_turb_pbase;
+	byte		*pdest = r_turb_pdest;
 
 	do
 	{
-		sturb = ((r_turb_s + r_turb_turb[(r_turb_t>>16)&(CYCLE-1)])>>16)&63;
-		tturb = ((r_turb_t + r_turb_turb[(r_turb_s>>16)&(CYCLE-1)])>>16)&63;
-		*r_turb_pdest++ = *(r_turb_pbase + (tturb<<6) + sturb);
-		r_turb_s += r_turb_sstep;
-		r_turb_t += r_turb_tstep;
-	} while (--r_turb_spancount > 0);
+		sturb = ((s + turb[(t>>16)&(CYCLE-1)])>>16)&63;
+		tturb = ((t + turb[(s>>16)&(CYCLE-1)])>>16)&63;
+		*pdest++ = *(pbase + (tturb<<6) + sturb);
+		s += sstep;
+		t += tstep;
+	} while (--n > 0);
+
+	r_turb_s = s;
+	r_turb_t = t;
+	r_turb_spancount = n;
+	r_turb_pdest = pdest;
 }
 
 static void D_DrawTurbulent8TSpan (void)
@@ -286,7 +302,7 @@ static void D_DrawTurbulent8 (espan_t *pspan)
 	} while ((pspan = pspan->pnext) != NULL);
 }
 
-static void D_DrawTurbulent8T (espan_t *pspan)
+static void D_DrawTurbulent8T_orig (espan_t *pspan)
 {
 	int				count;
 	fixed16_t		snext, tnext;
@@ -428,6 +444,181 @@ static void D_DrawTurbulent8T (espan_t *pspan)
 
 /*
 =============
+D_DrawTurbulent8T_fast
+
+Miyoo: the translucent water of D_DrawTurbulent8T_orig in one pass. The
+original first ran D_DrawSingleZSpans over the whole span (depth test and
+depth write, marking each pixel in scanList), then drew the marked pixels,
+all through globals. Here each pixel is tested and drawn in the same loop,
+on local copies. Every value is computed the same way, so the picture is the
+same ("r_fastloops 0" brings the original back, "-tcheck" compares them).
+=============
+*/
+/* the depth of the first pixel of a span, for D_DrawSingleZSpans and
+ * D_DrawTurbulent8T_fast (one function, so that both get the same rounding) */
+static FUNC_NOINLINE int D_SpanStartIzi (const espan_t *pspan)
+{
+	float	zi;
+	float	du, dv;
+
+	du = (float)pspan->u;
+	dv = (float)pspan->v;
+	zi = d_ziorigin + dv*d_zistepv + du*d_zistepu;
+	return (int)(zi * 0x8000 * 0x10000);
+}
+
+static void D_DrawTurbulent8T_fast (espan_t *pspan)
+{
+	int			count, spancount;
+	fixed16_t		s, t, snext, tnext, sstep, tstep;
+	float			sdivz, tdivz, zi, z, du, dv, spancountminus1;
+	float			sdivz16stepu, tdivz16stepu, zi16stepu;
+	int			izi, izistep, sturb, tturb;
+	short			zv;
+	short			*pz;
+	byte			*pdest;
+	const int		*const turb = r_turb_turb;
+	const byte		*const pbase = (const byte *)cacheblock;
+	const byte		*const mtt = mainTransTable;
+
+	sstep = 0;	// keep compiler happy
+	tstep = 0;	// ditto
+
+	sdivz16stepu = d_sdivzstepu * 16;
+	tdivz16stepu = d_tdivzstepu * 16;
+	zi16stepu = d_zistepu * 16;
+
+// as in D_DrawSingleZSpans
+	izistep = (int)(d_zistepu * 0x8000 * 0x10000);
+
+	do
+	{
+		pdest = (byte *)d_viewbuffer + (screenwidth * pspan->v) + pspan->u;
+		pz = d_pzbuffer + (d_zwidth * pspan->v) + pspan->u;
+		count = pspan->count;
+
+	// calculate the initial s/z, t/z, 1/z, s, and t and clamp
+		du = (float)pspan->u;
+		dv = (float)pspan->v;
+
+		izi = D_SpanStartIzi (pspan);
+
+		sdivz = d_sdivzorigin + dv*d_sdivzstepv + du*d_sdivzstepu;
+		tdivz = d_tdivzorigin + dv*d_tdivzstepv + du*d_tdivzstepu;
+		zi = d_ziorigin + dv*d_zistepv + du*d_zistepu;
+		z = (float)0x10000 / zi;	// prescale to 16.16 fixed-point
+
+		s = (int)(sdivz * z) + sadjust;
+		if (s > bbextents)
+			s = bbextents;
+		else if (s < 0)
+			s = 0;
+
+		t = (int)(tdivz * z) + tadjust;
+		if (t > bbextentt)
+			t = bbextentt;
+		else if (t < 0)
+			t = 0;
+
+		do
+		{
+		// calculate s and t at the far end of the span
+			if (count >= 16)
+				spancount = 16;
+			else
+				spancount = count;
+
+			count -= spancount;
+
+			if (count)
+			{
+			// calculate s/z, t/z, zi->fixed s and t at far end of span,
+			// calculate s and t steps across span by shifting
+				sdivz += sdivz16stepu;
+				tdivz += tdivz16stepu;
+				zi += zi16stepu;
+				z = (float)0x10000 / zi;	// prescale to 16.16 fixed-point
+
+				snext = (int)(sdivz * z) + sadjust;
+				if (snext > bbextents)
+					snext = bbextents;
+				else if (snext < 16)
+					snext = 16;	// prevent round-off error on <0 steps from
+								//  from causing overstepping & running off the
+								//  edge of the texture
+
+				tnext = (int)(tdivz * z) + tadjust;
+				if (tnext > bbextentt)
+					tnext = bbextentt;
+				else if (tnext < 16)
+					tnext = 16;	// guard against round-off error on <0 steps
+
+				sstep = (snext - s) >> 4;
+				tstep = (tnext - t) >> 4;
+			}
+			else
+			{
+			// calculate s/z, t/z, zi->fixed s and t at last pixel in span (so
+			// can't step off polygon), clamp, calculate s and t steps across
+			// span by division, biasing steps low so we don't run off the
+			// texture
+				spancountminus1 = (float)(spancount - 1);
+				sdivz += d_sdivzstepu * spancountminus1;
+				tdivz += d_tdivzstepu * spancountminus1;
+				zi += d_zistepu * spancountminus1;
+				z = (float)0x10000 / zi;	// prescale to 16.16 fixed-point
+				snext = (int)(sdivz * z) + sadjust;
+				if (snext > bbextents)
+					snext = bbextents;
+				else if (snext < 16)
+					snext = 16;	// prevent round-off error on <0 steps from
+								//  from causing overstepping & running off the
+								//  edge of the texture
+
+				tnext = (int)(tdivz * z) + tadjust;
+				if (tnext > bbextentt)
+					tnext = bbextentt;
+				else if (tnext < 16)
+					tnext = 16;	// guard against round-off error on <0 steps
+
+				if (spancount > 1)
+				{
+					sstep = (snext - s) / (spancount - 1);
+					tstep = (tnext - t) / (spancount - 1);
+				}
+			}
+
+			s = s & ((CYCLE<<16)-1);
+			t = t & ((CYCLE<<16)-1);
+
+			do
+			{
+				sturb = ((s + turb[(t>>16)&(CYCLE-1)])>>16)&63;
+				tturb = ((t + turb[(s>>16)&(CYCLE-1)])>>16)&63;
+				zv = (short)(izi >> 16);
+				if (*pz <= zv)
+				{
+					*pz = zv;
+					*pdest = mtt[(pbase[(tturb<<6) + sturb]<<8) + *pdest];
+				}
+				izi += izistep;
+				pz++;
+				pdest++;
+				s += sstep;
+				t += tstep;
+			} while (--spancount > 0);
+
+			s = snext;
+			t = tnext;
+
+		} while (count > 0);
+
+	} while ((pspan = pspan->pnext) != NULL);
+}
+
+
+/*
+=============
 Turbulent8
 =============
 */
@@ -436,7 +627,12 @@ void Turbulent8 (surf_t *s)
 	r_turb_turb = sintable + ((int)(cl.time*SPEED)&(CYCLE-1));
 
 	if (r_transwater.integer && s->flags & SURF_TRANSLUCENT)
-		D_DrawTurbulent8T(s->spans);
+	{
+		if (r_fastloops.integer)
+			D_DrawTurbulent8T_fast(s->spans);
+		else
+			D_DrawTurbulent8T_orig(s->spans);
+	}
 	else
 		D_DrawTurbulent8(s->spans);
 }
@@ -455,16 +651,19 @@ void D_DrawSpans8 (espan_t *pspan)
 	unsigned char	*pbase, *pdest;
 	fixed16_t		s, t, snext, tnext, sstep, tstep;
 	float			sdivz, tdivz, zi, z, du, dv, spancountminus1;
-	float			sdivz8stepu, tdivz8stepu, zi8stepu;
+	float			sdivz16stepu, tdivz16stepu, zi16stepu;
+	/* Miyoo: the loops below store bytes, which (with -fno-strict-aliasing)
+	 * forces every global they read to be reloaded at each pixel: work on copies */
+	const int		cw = cachewidth;
 
 	sstep = 0;	// keep compiler happy
 	tstep = 0;	// ditto
 
 	pbase = (unsigned char *)cacheblock;
 
-	sdivz8stepu = d_sdivzstepu * 8;
-	tdivz8stepu = d_tdivzstepu * 8;
-	zi8stepu = d_zistepu * 8;
+	sdivz16stepu = d_sdivzstepu * 16;
+	tdivz16stepu = d_tdivzstepu * 16;
+	zi16stepu = d_zistepu * 16;
 
 	do
 	{
@@ -495,8 +694,10 @@ void D_DrawSpans8 (espan_t *pspan)
 		do
 		{
 		// calculate s and t at the far end of the span
-			if (count >= 8)
-				spancount = 8;
+		// (16 pixel spans like the original x86 assembly: half the divides
+		// and float->int conversions of the 8 pixel version)
+			if (count >= 16)
+				spancount = 16;
 			else
 				spancount = count;
 
@@ -506,27 +707,27 @@ void D_DrawSpans8 (espan_t *pspan)
 			{
 			// calculate s/z, t/z, zi->fixed s and t at far end of span,
 			// calculate s and t steps across span by shifting
-				sdivz += sdivz8stepu;
-				tdivz += tdivz8stepu;
-				zi += zi8stepu;
+				sdivz += sdivz16stepu;
+				tdivz += tdivz16stepu;
+				zi += zi16stepu;
 				z = (float)0x10000 / zi;	// prescale to 16.16 fixed-point
 
 				snext = (int)(sdivz * z) + sadjust;
 				if (snext > bbextents)
 					snext = bbextents;
-				else if (snext < 8)
-					snext = 8;	// prevent round-off error on <0 steps from
+				else if (snext < 16)
+					snext = 16;	// prevent round-off error on <0 steps from
 								//  from causing overstepping & running off the
 								//  edge of the texture
 
 				tnext = (int)(tdivz * z) + tadjust;
 				if (tnext > bbextentt)
 					tnext = bbextentt;
-				else if (tnext < 8)
-					tnext = 8;	// guard against round-off error on <0 steps
+				else if (tnext < 16)
+					tnext = 16;	// guard against round-off error on <0 steps
 
-				sstep = (snext - s) >> 3;
-				tstep = (tnext - t) >> 3;
+				sstep = (snext - s) >> 4;
+				tstep = (tnext - t) >> 4;
 			}
 			else
 			{
@@ -560,12 +761,28 @@ void D_DrawSpans8 (espan_t *pspan)
 				}
 			}
 
-			do
+#define SPAN_PIXEL()\
+			do {\
+				*pdest++ = *(pbase + (s >> 16) + (t >> 16) * cw);\
+				s += sstep;\
+				t += tstep;\
+			} while (0)
+
+			if (spancount == 16)
+			{	// a full span: no loop counter to maintain
+				SPAN_PIXEL(); SPAN_PIXEL(); SPAN_PIXEL(); SPAN_PIXEL();
+				SPAN_PIXEL(); SPAN_PIXEL(); SPAN_PIXEL(); SPAN_PIXEL();
+				SPAN_PIXEL(); SPAN_PIXEL(); SPAN_PIXEL(); SPAN_PIXEL();
+				SPAN_PIXEL(); SPAN_PIXEL(); SPAN_PIXEL(); SPAN_PIXEL();
+			}
+			else
 			{
-				*pdest++ = *(pbase + (s >> 16) + (t >> 16) * cachewidth);
-				s += sstep;
-				t += tstep;
-			} while (--spancount > 0);
+				do
+				{
+					SPAN_PIXEL();
+				} while (--spancount > 0);
+			}
+#undef SPAN_PIXEL
 
 			s = snext;
 			t = tnext;
@@ -586,6 +803,10 @@ void D_DrawSpans8T (espan_t *pspan)
 	short		*pz;
 	byte		btemp;
 	int			izi, izistep;
+	/* Miyoo: the loops below store bytes, which (with -fno-strict-aliasing)
+	 * forces every global they read to be reloaded at each pixel: work on copies */
+	const int		cw = cachewidth;
+	const byte	*const mtt = mainTransTable;
 
 	sstep = 0;	// keep compiler happy
 	tstep = 0;	// ditto
@@ -696,10 +917,10 @@ void D_DrawSpans8T (espan_t *pspan)
 
 			do
 			{
-				btemp = *(pbase + (s >> 16) + (t >> 16) * cachewidth);
+				btemp = *(pbase + (s >> 16) + (t >> 16) * cw);
 				if (*pz <= (izi >> 16))
 				{
-					*pdest = mainTransTable[(btemp<<8) + (*pdest)];
+					*pdest = mtt[(btemp<<8) + (*pdest)];
 				}
 				izi += izistep;
 				pdest++;
@@ -787,8 +1008,6 @@ void D_DrawSingleZSpans (espan_t *pspan)
 	int			count, izistep;
 	int			izi;
 	short			*pdest;
-	float			zi;
-	float			du, dv;
 
 	ZScanCount = 0;
 
@@ -801,12 +1020,9 @@ void D_DrawSingleZSpans (espan_t *pspan)
 	count = pspan->count;
 
 // calculate the initial 1/z
-	du = (float)pspan->u;
-	dv = (float)pspan->v;
-
-	zi = d_ziorigin + dv*d_zistepv + du*d_zistepu;
-// we count on FP exceptions being turned off to avoid range problems
-	izi = (int)(zi * 0x8000 * 0x10000);
+// Miyoo: in a function shared with D_DrawTurbulent8T_fast, so both round it
+// the same way (-ffast-math lets the compiler reorder it differently in each)
+	izi = D_SpanStartIzi (pspan);
 
 	if (count > 0)
 	{

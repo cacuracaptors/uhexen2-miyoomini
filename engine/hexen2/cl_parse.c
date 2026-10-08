@@ -1453,17 +1453,20 @@ void CL_ParseServerMessage (void)
 			cl.looptrack = MSG_ReadByte ();
 			if (q_strcasecmp(bgmtype.string,"cd") != 0)
 				CDAudio_Stop ();
+		/* Miyoo: through the music player, which plays the CD track
+		 * from music/trackNN.ogg when there is no CD (BGM_PlayCDtrack) */
 			else if ((cls.demoplayback || cls.demorecording) &&
 						cls.forcetrack != -1)
-				CDAudio_Play ((byte)cls.forcetrack, true);
-			else	CDAudio_Play ((byte)cl.cdtrack, true);
+				BGM_PlayCDtrack ((byte)cls.forcetrack, true);
+			else	BGM_PlayCDtrack ((byte)cl.cdtrack, true);
 			break;
 
 		case svc_midi_name:
 			q_strlcpy (cl.midi_name, MSG_ReadString(), sizeof(cl.midi_name));
-			if (q_strcasecmp(bgmtype.string,"midi") != 0)
-				BGM_Stop();
-			else	BGM_PlayMIDIorMusic(cl.midi_name);
+			if (q_strcasecmp(bgmtype.string,"midi") == 0)
+				BGM_PlayMIDIorMusic(cl.midi_name);
+			else if (q_strcasecmp(bgmtype.string,"cd") != 0)
+				BGM_Stop();	/* Miyoo: not in "cd" mode: the CD track plays through it now */
 			break;
 
 		case svc_toggle_statbar:

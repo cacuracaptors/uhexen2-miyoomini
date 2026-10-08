@@ -27,9 +27,9 @@
 				// need for inner-loop light clamping
 
 mtriangle_t		*ptriangles;
-affinetridesc_t		r_affinetridesc;
+MT_TLS affinetridesc_t	r_affinetridesc;	/* Miyoo: per thread (models on two cores) */
 
-void			*acolormap;	// FIXME: should go away
+MT_TLS void		*acolormap;	// FIXME: should go away
 
 ASM_LINKAGE_BEGIN
 trivertx_t		*r_apverts;
@@ -85,6 +85,12 @@ static void R_AliasTransformVector (vec3_t in, vec3_t out);
 static void R_AliasTransformFinalVert (finalvert_t *fv, auxvert_t *av, trivertx_t *pverts);
 
 
+/* Miyoo: what R_AliasCheckBBox learned for R_AliasOccluded: the nearest
+ * depth of the frame's box and its rectangle on the screen */
+static qboolean	r_occl_ok;
+static float	r_occl_minz;
+static float	r_occl_x0, r_occl_y0, r_occl_x1, r_occl_y1;
+
 /*
 ================
 R_AliasCheckBBox
@@ -106,6 +112,8 @@ qboolean R_AliasCheckBBox (void)
 
 	currententity->trivial_accept = 0;
 	pmodel = currententity->model;
+	if (D_PolyMT_Active () && !Cache_Check (&pmodel->cache))
+		D_PolyMT_Flush ();	/* Miyoo: loading it may move memory the second core reads */
 	pahdr = (aliashdr_t *) Mod_Extradata (pmodel);
 	pmdl = (newmdl_t*)((byte *)pahdr + pahdr->model);
 
@@ -160,6 +168,10 @@ qboolean R_AliasCheckBBox (void)
 
 	zclipped = false;
 	zfullyclipped = true;
+	r_occl_ok = false;
+	r_occl_minz = 99999.0f;
+	r_occl_x0 = r_occl_y0 = 99999.0f;
+	r_occl_x1 = r_occl_y1 = -99999.0f;
 
 	minz = 9999;
 	for (i = 0 ; i < 8 ; i++)
@@ -176,6 +188,8 @@ qboolean R_AliasCheckBBox (void)
 		{
 			if (viewaux[i].fv[2] < minz)
 				minz = viewaux[i].fv[2];
+			if (viewaux[i].fv[2] < r_occl_minz)
+				r_occl_minz = viewaux[i].fv[2];
 			viewpts[i].flags = 0;
 			zfullyclipped = false;
 		}
@@ -234,6 +248,10 @@ qboolean R_AliasCheckBBox (void)
 	// FIXME: do with chop mode in ASM, or convert to float
 		v0 = (viewaux[i].fv[0] * xscale * zi) + xcenter;
 		v1 = (viewaux[i].fv[1] * yscale * zi) + ycenter;
+		if (v0 < r_occl_x0) r_occl_x0 = v0;
+		if (v0 > r_occl_x1) r_occl_x1 = v0;
+		if (v1 < r_occl_y0) r_occl_y0 = v1;
+		if (v1 > r_occl_y1) r_occl_y1 = v1;
 
 		flags = 0;
 
@@ -254,6 +272,7 @@ qboolean R_AliasCheckBBox (void)
 		return false;	// trivial reject off one side
 
 	currententity->trivial_accept = !anyclip & !zclipped;
+	r_occl_ok = !zclipped;
 
 	if (currententity->trivial_accept)
 	{
@@ -263,6 +282,64 @@ qboolean R_AliasCheckBBox (void)
 		}
 	}
 
+	return true;
+}
+
+
+/*
+================
+R_AliasOccluded
+
+Miyoo: true when the model cannot change a single pixel: every point of it
+is at least as far as its box's nearest corner, so its depth value
+(1/z, as the drawing code computes it) is at most that corner's; if the
+world already drawn is nearer than that over the whole rectangle the box
+covers on the screen, each of its pixels would fail the depth test. Then
+lighting, transforming and drawing it are skipped. Called after
+R_AliasCheckBBox, before the model is drawn; the depth values read can only
+be older (farther) than the final ones, which keeps the test on the safe side.
+================
+*/
+cvar_t	r_occlude = {"r_occlude", "1", CVAR_NONE};
+
+qboolean R_AliasOccluded (void)
+{
+	int		x0, y0, x1, y1, x, y, zlimit;
+	double		zi;
+	const short	*pz;
+
+	if (!r_occl_ok || !r_occlude.integer || !r_fastloops.integer || r_occl_minz < ALIAS_Z_CLIP_PLANE)
+		return false;
+	/* the screen rectangle, with a margin for the rounding of vertices */
+	x0 = (int) floor (r_occl_x0) - 2;
+	y0 = (int) floor (r_occl_y0) - 2;
+	x1 = (int) ceil (r_occl_x1) + 2;
+	y1 = (int) ceil (r_occl_y1) + 2;
+	if (x0 < r_refdef.vrect.x)
+		x0 = r_refdef.vrect.x;
+	if (y0 < r_refdef.vrect.y)
+		y0 = r_refdef.vrect.y;
+	if (x1 > r_refdef.vrectright - 1)
+		x1 = r_refdef.vrectright - 1;
+	if (y1 > r_refdef.vrectbottom - 1)
+		y1 = r_refdef.vrectbottom - 1;
+	if (x1 < x0 || y1 < y0)
+		return false;	/* off the view: R_AliasCheckBBox decides */
+	if ((x1 - x0 + 1) * (y1 - y0 + 1) > 120000)
+		return false;	/* big on the screen: surely visible, not worth the look */
+	/* the nearest point's depth value in the depth buffer's units, plus a
+	 * margin for the stepping errors of the drawing */
+	zi = (double) 0x8000 * (double) 0x10000 / (double) r_occl_minz;
+	zlimit = ((int) zi >> 16) + 4;
+	for (y = y0; y <= y1; y++)
+	{
+		pz = d_pzbuffer + (size_t) y * d_zwidth + x0;
+		for (x = x0; x <= x1; x++, pz++)
+		{
+			if (*pz <= zlimit)
+				return false;	/* the model may show here */
+		}
+	}
 	return true;
 }
 
@@ -295,6 +372,7 @@ static void R_AliasPreparePoints (void)
 	auxvert_t	*av;
 	mtriangle_t	*ptri;
 	finalvert_t	*pfv[3];
+	double		pt = PERF_START ();
 
 	pstverts = (stvert_t *)((byte *)paliashdr + paliashdr->stverts);
 	r_anumverts = pmdl->numverts;
@@ -324,6 +402,8 @@ static void R_AliasPreparePoints (void)
 		}
 	}
 
+	PERF_STOP (pt, PF_MVERTS);
+	pt = PERF_START ();
 //
 // clip and draw all triangles
 //
@@ -372,6 +452,13 @@ static void R_AliasPreparePoints (void)
 		{	// partially clipped
 			R_AliasClipTriangle (ptri);
 		}
+	}
+	if (vid_perf)
+	{
+		double d = VID_PerfNow () - pt;
+		VID_PerfAdd (PF_MTRI, d);
+		VID_PerfAdd (PF_MTRIC, d);
+		VID_PerfCount (PC_MTC, pmdl->numtris);
 	}
 }
 
@@ -675,6 +762,7 @@ void R_AliasPrepareUnclippedPoints (void)
 	finalvert_t	*fv;
 	mtriangle_t	*ptri;
 	int	i;
+	double		pt = PERF_START ();
 
 	pstverts = (stvert_t *)((byte *)paliashdr + paliashdr->stverts);
 	r_anumverts = pmdl->numverts;
@@ -682,6 +770,8 @@ void R_AliasPrepareUnclippedPoints (void)
 	fv = pfinalverts;
 
 	R_AliasTransformAndProjectFinalVerts (fv, pstverts);
+	PERF_STOP (pt, PF_MVERTS);
+	pt = PERF_START ();
 
 	r_affinetridesc.pfinalverts = pfinalverts;
 	r_affinetridesc.ptriangles = (mtriangle_t *)
@@ -754,6 +844,18 @@ void R_AliasPrepareUnclippedPoints (void)
 				D_PolysetDraw ();
 		}
 	}
+	if (vid_perf)
+	{
+		double d = VID_PerfNow () - pt;
+		VID_PerfAdd (PF_MTRI, d);
+		if (r_affinetridesc.drawtype)
+		{
+			VID_PerfAdd (PF_MTRIS, d);
+			VID_PerfCount (PC_MTS, pmdl->numtris);
+		}
+		else
+			VID_PerfCount (PC_MTU, pmdl->numtris);
+	}
 }
 
 /*
@@ -815,6 +917,7 @@ static void R_AliasSetupSkin (void)
 	if (currententity->skinnum >= 100)
 	{
 		sprintf(temp,"gfx/skin%d.lmp",currententity->skinnum);
+		D_PolyMT_Flush ();	/* Miyoo: the picture cache may move memory */
 		stonepic = Draw_CachePic(temp);
 
 		r_affinetridesc.pskindesc = pskindesc;
@@ -930,6 +1033,7 @@ void R_AliasDrawModel (alight_t *plighting)
 	byte		*dest, *source, *sourceA;
 	auxvert_t	auxverts[MAXALIASVERTS];
 	finalvert_t	finalverts[MAXALIASVERTS + ((CACHE_SIZE - 1) / sizeof(finalvert_t)) + 1];
+	double		pt;
 
 	r_amodels_drawn++;
 
@@ -938,9 +1042,12 @@ void R_AliasDrawModel (alight_t *plighting)
 			(((intptr_t)&finalverts[0] + CACHE_SIZE - 1) & ~(CACHE_SIZE - 1));
 	pauxverts = &auxverts[0];
 
+	if (D_PolyMT_Active () && !Cache_Check (&currententity->model->cache))
+		D_PolyMT_Flush ();	/* Miyoo: see R_AliasCheckBBox */
 	paliashdr = (aliashdr_t *)Mod_Extradata (currententity->model);
 	pmdl = (newmdl_t *)((byte *)paliashdr + paliashdr->model);
 
+	pt = PERF_START ();
 	R_AliasSetupSkin ();
 	R_AliasSetUpTransform (currententity->trivial_accept);
 
@@ -1006,6 +1113,7 @@ void R_AliasDrawModel (alight_t *plighting)
 		(currententity->colorshade != lastglobalcolor ||
 		 currententity->sourcecolormap != lastsourcecolormap) )
 	{
+		D_PolyMT_Flush ();	/* Miyoo: the second core may still use the old table */
 		lastglobalcolor = currententity->colorshade;
 		lastsourcecolormap = currententity->sourcecolormap;
 
@@ -1027,6 +1135,7 @@ void R_AliasDrawModel (alight_t *plighting)
 	else
 		ziscale = (float)0x8000 * (float)0x10000 * 3.0;
 
+	PERF_STOP (pt, PF_MSETUP);
 	if (currententity->trivial_accept)
 		R_AliasPrepareUnclippedPoints ();
 	else

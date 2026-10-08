@@ -1,0 +1,38 @@
+#!/bin/sh
+# Hexen II for the Miyoo Mini Plus (OnionOS) - https://github.com/cacuracaptors/uhexen2-miyoomini
+GameName="Hexen II"
+GameDir="Hexen2"
+GameExecutable="hexen2"
+GameDataFile="hexen2"
+
+KillAudioserver=1
+PerformanceMode=1
+
+FullGamePath="/mnt/SDCARD/Roms/PORTS/Games/$GameDir"
+GameFolder="$FullGamePath"
+
+export SDL_HIDE_BATTERY=1
+export SDL_VIDEODRIVER=fbcon
+export LD_LIBRARY_PATH="$FullGamePath:$LD_LIBRARY_PATH"
+export HOME="$FullGamePath"
+
+# The game looks for lower case names (data1/pak0.pak, data1/music/track02.ogg),
+# while the files copied from a PC may come in upper or mixed case: rename them
+# (through a temporary name, as the SD card may not tell the cases apart).
+lower_names () {
+	for f in "$1"/*; do
+		[ -e "$f" ] || continue
+		b=$(basename "$f")
+		l=$(echo "$b" | tr 'A-Z' 'a-z')
+		[ "$b" = "$l" ] && continue
+		mv "$f" "$1/.rename_tmp" && mv "$1/.rename_tmp" "$1/$l"
+	done
+}
+lower_names "$FullGamePath/data1"
+[ -d "$FullGamePath/data1/music" ] && lower_names "$FullGamePath/data1/music"
+
+# 3D view at 640x480, status bar, menus and text at 320x240
+Arguments="-basedir $FullGamePath -userdir $FullGamePath/userdir -heapsize 32768 -nomouse -nojoy -ui320"
+
+cd "$GameFolder"
+/mnt/SDCARD/Emu/PORTS/launch_standalone.sh "$GameName" "$GameDir" "$GameExecutable" "$Arguments" "$GameDataFile" "$KillAudioserver" "$PerformanceMode" > "$GameFolder/log.txt" 2>&1

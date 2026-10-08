@@ -52,6 +52,7 @@ typedef struct surfcache_s
 	struct texture_s	*texture;	// checked for animating textures
 	int			drawflags;
 	int			abslight;
+	unsigned int		mtuse;		// Miyoo: second-core jobs using it are done when mt_tail reaches this
 	byte			data[4];	// width*height elements
 } surfcache_t;
 
@@ -93,19 +94,40 @@ extern qboolean		d_roverwrapped;
 extern surfcache_t	*sc_rover;
 extern surfcache_t	*d_initial_rover;
 
+#ifndef MT_TLS
+/* Miyoo: the span drawing state is per thread, so that the second core can
+ * draw part of the rows of a surface while the first core does the rest */
+#define MT_TLS	__thread
+#endif
+
 ASM_LINKAGE_BEGIN
 
-extern float	d_sdivzstepu, d_tdivzstepu, d_zistepu;
-extern float	d_sdivzstepv, d_tdivzstepv, d_zistepv;
-extern float	d_sdivzorigin, d_tdivzorigin, d_ziorigin;
+extern MT_TLS float	d_sdivzstepu, d_tdivzstepu, d_zistepu;
+extern MT_TLS float	d_sdivzstepv, d_tdivzstepv, d_zistepv;
+extern MT_TLS float	d_sdivzorigin, d_tdivzorigin, d_ziorigin;
 
-extern fixed16_t	sadjust, tadjust;
-extern fixed16_t	bbextents, bbextentt;
+extern MT_TLS fixed16_t	sadjust, tadjust;
+extern MT_TLS fixed16_t	bbextents, bbextentt;
 
 ASM_LINKAGE_END
 
 
 extern void (*d_drawspans) (espan_t *pspan);
+
+/* Miyoo: drawing on the second core (d_edge.c) */
+void D_MT_Drain (void);		/* wait until the second core finished what it was given */
+unsigned int D_MT_Mark (void);	/* mark of everything given to the second core so far */
+unsigned int D_MT_Done (void);	/* a mark that is already finished */
+qboolean D_MT_Pending (unsigned int mark);	/* the second core has not reached it yet */
+void D_MT_WaitMark (unsigned int mark);	/* wait until it has (texture cache memory reused) */
+void D_MT_EndFrame (void);	/* once per frame: balance the rows between the cores */
+extern float	d_mt_share;	/* part of the rows drawn by the second core */
+extern float	d_mt_share_tr;	/* the same, in the translucent pass */
+extern int	(*d_mt_idlework)(void);	/* done by the second core between jobs; 1 = it did something */
+extern int	(*d_mt_duework)(void);	/* the same, before its next job, when it is behind schedule */
+void D_MT_Kick (void);		/* there is idle work now */
+qboolean D_MT_Alive (void);	/* its thread is running */
+qboolean D_MT_On (void);	/* jobs may be given to it now */
 
 ASM_LINKAGE_BEGIN
 
@@ -200,7 +222,7 @@ extern short	*zspantable[MAXHEIGHT];
 extern byte	scanList[SCAN_SIZE];
 extern int	ZScanCount;
 
-extern int	d_aflatcolor;
+extern MT_TLS int	d_aflatcolor;
 
 ASM_LINKAGE_END
 

@@ -69,6 +69,21 @@ int	r_currentkey;
 static void (*pdrawfunc)(void);
 static void (*pdrawTfunc)(void);
 
+/* Miyoo: translucent spans built during the opaque pass.
+ * The original engine finds the translucent surfaces (water, glass) in the
+ * opaque pass, then runs a second complete pass over all the edges of every
+ * line just to build their spans. The spans of a line only depend on the
+ * active edge list of that line, which the opaque pass already has, so they
+ * are built right there, into a pool of their own that the span flushes do
+ * not reset, and drawn after the models like before. If the pool runs out,
+ * the frame falls back to the original second pass. "r_transonepass 0"
+ * brings the original behaviour back (to compare). */
+cvar_t		r_transonepass = {"r_transonepass", "1", CVAR_NONE};
+qboolean	r_tspans_ready;
+#define	MAXTSPANS	16384
+static espan_t	r_tspanbuf[MAXTSPANS];
+static espan_t	*tspan_p, *tspan_max;
+
 #if	!id386
 static void R_GenerateSpans (void);
 static void R_GenerateTSpans (void);
@@ -901,6 +916,40 @@ static void R_GenerateSpansBackward (void)
 static qboolean TransList[SCAN_SIZE];
 static espan_t *max_span_p;
 
+static void R_GenerateTSpansNow (void)
+{
+	espan_t	*save;
+
+	if (tspan_p >= tspan_max)
+	{	/* out of room: this frame uses the second pass */
+		r_tspans_ready = false;
+		return;
+	}
+	save = span_p;
+	span_p = tspan_p;
+	surfaces[1].spanstate = 1;	/* as the second pass does before each line */
+	(*pdrawTfunc) ();
+	tspan_p = span_p;
+	span_p = save;
+}
+
+static void R_FlushSpans (qboolean Translucent)
+{
+	surf_t	*s;
+	double	pt = PERF_START ();
+
+	D_DrawSurfaces (Translucent);
+	PERF_STOP (pt, Translucent ? PF_TSPANS : PF_WSPANS);
+
+// clear the surface span pointers (but keep the translucent spans made
+// during the opaque pass: they are drawn after the models)
+	for (s = &surfaces[1] ; s < surface_p ; s++)
+	{
+		if (Translucent || !r_tspans_ready || !(s->flags & SURF_TRANSLUCENT))
+			s->spans = NULL;
+	}
+}
+
 /*
 ==============
 R_ScanEdges
@@ -916,7 +965,6 @@ void R_ScanEdges (qboolean Translucent)
 	int		iv, bottom;
 	byte	basespans[MAXSPANS*sizeof(espan_t)+CACHE_SIZE];
 	espan_t	*basespan_p;
-	surf_t	*s;
 
 	if (Translucent && r_draworder.integer)
 		return;
@@ -963,6 +1011,9 @@ void R_ScanEdges (qboolean Translucent)
 	{
 //		memset(TransList,0,sizeof(TransList));
 		TransCount = 0;
+		tspan_p = r_tspanbuf;
+		tspan_max = &r_tspanbuf[MAXTSPANS - r_refdef.vrect.width];
+		r_tspans_ready = (r_transonepass.integer && !r_draworder.integer);
 	}
 
 	for (iv = r_refdef.vrect.y ; iv < bottom ; iv++)
@@ -983,6 +1034,8 @@ void R_ScanEdges (qboolean Translucent)
 			(*pdrawfunc) ();
 			TransList[iv] = FoundTrans;
 			TransCount += FoundTrans;
+			if (FoundTrans && r_tspans_ready)
+				R_GenerateTSpansNow ();
 		}
 		else if (TransList[iv])
 		{
@@ -997,11 +1050,7 @@ void R_ScanEdges (qboolean Translucent)
 			S_ExtraUpdate ();	// don't let sound get messed up if going slow
 			VID_LockBuffer ();
 
-			D_DrawSurfaces (Translucent);
-
-		// clear the surface span pointers
-			for (s = &surfaces[1] ; s < surface_p ; s++)
-				s->spans = NULL;
+			R_FlushSpans (Translucent);
 
 			span_p = basespan_p;
 		}
@@ -1028,11 +1077,17 @@ void R_ScanEdges (qboolean Translucent)
 		(*pdrawfunc) ();
 		TransList[iv] = FoundTrans;
 		TransCount += FoundTrans;
+		if (FoundTrans && r_tspans_ready)
+			R_GenerateTSpansNow ();
 	}
 	else if (TransList[iv])
 		(*pdrawTfunc) ();
 
 	// draw whatever's left in the span list
-	D_DrawSurfaces (Translucent);
+	{
+		double pt = PERF_START ();
+		D_DrawSurfaces (Translucent);
+		PERF_STOP (pt, Translucent ? PF_TSPANS : PF_WSPANS);
+	}
 }
 

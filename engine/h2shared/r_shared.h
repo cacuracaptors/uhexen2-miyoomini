@@ -52,8 +52,13 @@ extern void	R_DrawLine (polyvert_t *polyvert0, polyvert_t *polyvert1);
 
 
 ASM_LINKAGE_BEGIN
-extern	int	cachewidth;
-extern	pixel_t	*cacheblock;
+#ifndef MT_TLS
+/* Miyoo: the span drawing state is per thread, so that the second core can
+ * draw part of the rows of a surface while the first core does the rest */
+#define MT_TLS	__thread
+#endif
+extern	MT_TLS int	cachewidth;
+extern	MT_TLS pixel_t	*cacheblock;
 extern	int	screenwidth;
 ASM_LINKAGE_END
 
@@ -137,7 +142,7 @@ ASM_LINKAGE_END
 extern	int	d_lightstylevalue[256];	// 8.8 frac of base light value
 
 ASM_LINKAGE_BEGIN
-extern	int	ubasestep, errorterm, erroradjustup, erroradjustdown;
+extern	MT_TLS int	ubasestep, errorterm, erroradjustup, erroradjustdown;
 ASM_LINKAGE_END
 
 extern	int	r_skymade;

@@ -810,6 +810,7 @@ static void _Host_Frame (float time)
 	static double		time2 = 0;
 	static double		time3 = 0;
 	int			pass1, pass2, pass3;
+	double			pt;
 #if !defined(FPS_20)
 	double	save_host_frametime,total_host_frametime;
 #endif
@@ -823,6 +824,8 @@ static void _Host_Frame (float time)
 // decide the simulation time
 	if (!Host_FilterTime (time))
 		return;			// don't run too fast, or packets will flood out
+
+	pt = PERF_START ();
 
 // get new key events
 	Sys_SendKeyEvents ();
@@ -847,6 +850,7 @@ static void _Host_Frame (float time)
 
 // check for commands typed to the host
 	Host_GetConsoleCommands ();
+	PERF_STOP (pt, PF_INPUT);
 
 #ifdef FPS_20
 	if (sv.active)
@@ -881,8 +885,10 @@ static void _Host_Frame (float time)
 
 	do
 	{
+		pt = PERF_START ();
 		if (sv.active)
 			Host_ServerFrame ();
+		PERF_STOP (pt, PF_SERVER);
 
 	//-------------------
 	//
@@ -892,6 +898,7 @@ static void _Host_Frame (float time)
 
 	// if running the server remotely, send intentions now after
 	// the incoming messages have been read
+		pt = PERF_START ();
 		if (!sv.active)
 			CL_SendCmd ();
 
@@ -901,6 +908,7 @@ static void _Host_Frame (float time)
 
 		R_UpdateParticles ();
 		CL_UpdateEffects ();
+		PERF_STOP (pt, PF_CLIENT);
 
 		if (!sys_adaptive.integer)
 			break;
@@ -922,12 +930,15 @@ static void _Host_Frame (float time)
 	if (host_speeds.integer)
 		time1 = Sys_DoubleTime ();
 
+	pt = PERF_START ();
 	SCR_UpdateScreen ();
+	PERF_STOP (pt, PF_SCREEN);
 
 	if (host_speeds.integer)
 		time2 = Sys_DoubleTime ();
 
 // update audio
+	pt = PERF_START ();
 	BGM_Update();	// adds music raw samples and/or advances midi driver
 	if (cls.signon == SIGNONS)
 	{
@@ -938,6 +949,7 @@ static void _Host_Frame (float time)
 		S_Update (vec3_origin, vec3_origin, vec3_origin, vec3_origin);
 
 	CDAudio_Update();
+	PERF_STOP (pt, PF_SOUND);
 
 	if (host_speeds.integer)
 	{

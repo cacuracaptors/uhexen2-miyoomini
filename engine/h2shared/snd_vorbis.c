@@ -28,6 +28,204 @@
 #include "snd_codeci.h"
 #include "snd_vorbis.h"
 
+#if defined(VORBIS_USE_STB)
+/* Miyoo: Ogg Vorbis music without external libraries, with stb_vorbis
+ * (public domain, single file). The whole file is read into memory when the
+ * music starts, and a thread on the second core decodes it ahead into a
+ * ring buffer, at the lowest priority, so that the game's own frame (on the
+ * first core) only copies already decoded sound. */
+#define STB_VORBIS_NO_PUSHDATA_API
+#define STB_VORBIS_NO_STDIO
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"	/* harmless, in stb_vorbis */
+#include "stb_vorbis.c"
+#pragma GCC diagnostic pop
+
+#define VORBIS_SAMPLEBITS 16	/* signed 16 bit, host order */
+#define VORBIS_SAMPLEWIDTH 2
+
+#include <pthread.h>
+#include <unistd.h>
+#include <sys/resource.h>
+#include <sys/syscall.h>
+
+#define SV_RING		(44100 * 2 * 4)	/* samples (shorts): ~4 seconds of 44kHz stereo */
+#define SV_CHUNK	2048		/* shorts decoded at a time */
+
+typedef struct
+{
+	stb_vorbis	*v;
+	byte		*data;		/* the whole file */
+	int		channels;
+	short		*ring;
+	int		rd, wr, count;	/* in shorts */
+	qboolean	eof, quit;
+	pthread_t	thread;
+	qboolean	thread_ok;
+	pthread_mutex_t	lock;
+	pthread_cond_t	cond;
+} svstream_t;
+
+/* decode one chunk into the ring; called with the lock held */
+static void SV_DecodeChunk (svstream_t *sv)
+{
+	short	tmp[SV_CHUNK];
+	int	n, i;
+
+	n = stb_vorbis_get_samples_short_interleaved (sv->v, sv->channels, tmp, SV_CHUNK) * sv->channels;
+	if (n <= 0)
+	{
+		sv->eof = true;
+		return;
+	}
+	for (i = 0; i < n; i++)
+	{
+		sv->ring[sv->wr] = tmp[i];
+		sv->wr = (sv->wr + 1) % SV_RING;
+	}
+	sv->count += n;
+}
+
+static void *SV_Thread (void *arg)
+{
+	svstream_t	*sv = (svstream_t *) arg;
+	unsigned long	mask = 1UL << 1;
+
+	syscall (SYS_sched_setaffinity, 0, sizeof(mask), &mask);	/* the second core */
+	setpriority (PRIO_PROCESS, (id_t) syscall (SYS_gettid), 19);	/* only in its gaps */
+	pthread_mutex_lock (&sv->lock);
+	while (!sv->quit)
+	{
+		if (!sv->eof && SV_RING - sv->count >= SV_CHUNK)
+		{
+			SV_DecodeChunk (sv);
+			/* let the reader in between chunks */
+			pthread_mutex_unlock (&sv->lock);
+			pthread_mutex_lock (&sv->lock);
+			continue;
+		}
+		pthread_cond_wait (&sv->cond, &sv->lock);
+	}
+	pthread_mutex_unlock (&sv->lock);
+	return NULL;
+}
+
+static qboolean S_VORBIS_CodecInitialize (void)
+{
+	return true;
+}
+
+static void S_VORBIS_CodecShutdown (void)
+{
+}
+
+static qboolean S_VORBIS_CodecOpenStream (snd_stream_t *stream)
+{
+	svstream_t	*sv;
+	stb_vorbis_info	info;
+	int		err = 0;
+	long		len = stream->fh.length;
+
+	sv = (svstream_t *) calloc (1, sizeof(svstream_t));
+	if (!sv)
+		return false;
+	sv->data = (byte *) malloc (len > 0 ? len : 1);
+	sv->ring = (short *) malloc (SV_RING * sizeof(short));
+	if (!sv->data || !sv->ring || FS_fread (sv->data, 1, len, &stream->fh) != (size_t) len)
+	{
+		Con_Printf("Couldn't read %s\n", stream->name);
+		goto _fail;
+	}
+	sv->v = stb_vorbis_open_memory (sv->data, (int) len, &err, NULL);
+	if (!sv->v)
+	{
+		Con_Printf("%s is not a valid Ogg Vorbis file (error %i).\n", stream->name, err);
+		goto _fail;
+	}
+	info = stb_vorbis_get_info (sv->v);
+	if (info.channels != 1 && info.channels != 2)
+	{
+		Con_Printf("Unsupported number of channels %d in %s\n", info.channels, stream->name);
+		goto _fail;
+	}
+	sv->channels = info.channels;
+	stream->info.rate = info.sample_rate;
+	stream->info.channels = info.channels;
+	stream->info.bits = VORBIS_SAMPLEBITS;
+	stream->info.width = VORBIS_SAMPLEWIDTH;
+	pthread_mutex_init (&sv->lock, NULL);
+	pthread_cond_init (&sv->cond, NULL);
+	sv->thread_ok = (pthread_create (&sv->thread, NULL, SV_Thread, sv) == 0);
+	stream->priv = sv;
+	return true;
+_fail:
+	if (sv->v)
+		stb_vorbis_close (sv->v);
+	free (sv->data);
+	free (sv->ring);
+	free (sv);
+	return false;
+}
+
+static int S_VORBIS_CodecReadStream (snd_stream_t *stream, int bytes, void *buffer)
+{
+	svstream_t	*sv = (svstream_t *) stream->priv;
+	short		*out = (short *) buffer;
+	int		want = bytes / 2, n = 0;
+
+	want -= want % sv->channels;
+	pthread_mutex_lock (&sv->lock);
+	/* the thread fell behind (or did not start): decode here */
+	if (sv->count == 0 && !sv->eof)
+		SV_DecodeChunk (sv);
+	while (n < want && sv->count > 0)
+	{
+		out[n++] = sv->ring[sv->rd];
+		sv->rd = (sv->rd + 1) % SV_RING;
+		sv->count--;
+	}
+	pthread_cond_signal (&sv->cond);	/* room again */
+	pthread_mutex_unlock (&sv->lock);
+	return n * 2;	/* 0 only at the end of the file */
+}
+
+static void S_VORBIS_CodecCloseStream (snd_stream_t *stream)
+{
+	svstream_t	*sv = (svstream_t *) stream->priv;
+
+	if (sv->thread_ok)
+	{
+		pthread_mutex_lock (&sv->lock);
+		sv->quit = true;
+		pthread_cond_signal (&sv->cond);
+		pthread_mutex_unlock (&sv->lock);
+		pthread_join (sv->thread, NULL);
+	}
+	stb_vorbis_close (sv->v);
+	pthread_mutex_destroy (&sv->lock);
+	pthread_cond_destroy (&sv->cond);
+	free (sv->data);
+	free (sv->ring);
+	free (sv);
+	S_CodecUtilClose(&stream);
+}
+
+static int S_VORBIS_CodecRewindStream (snd_stream_t *stream)
+{
+	svstream_t	*sv = (svstream_t *) stream->priv;
+	int		ok;
+
+	pthread_mutex_lock (&sv->lock);
+	ok = stb_vorbis_seek_start (sv->v);
+	sv->rd = sv->wr = sv->count = 0;
+	sv->eof = false;
+	pthread_cond_signal (&sv->cond);
+	pthread_mutex_unlock (&sv->lock);
+	return ok ? 0 : -1;
+}
+
+#else	/* !VORBIS_USE_STB: libvorbisfile or Tremor */
+
 #define OV_EXCLUDE_STATIC_CALLBACKS
 #if defined(VORBIS_USE_TREMOR)
 /* for Tremor / Vorbisfile api differences,
@@ -185,6 +383,8 @@ static int S_VORBIS_CodecRewindStream (snd_stream_t *stream)
  */
 	return ov_time_seek ((OggVorbis_File *)stream->priv, 0);
 }
+
+#endif	/* VORBIS_USE_STB */
 
 snd_codec_t vorbis_codec =
 {

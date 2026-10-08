@@ -460,7 +460,7 @@ void R_SetupFrame (void)
 				vrect.width = vid.width;
 				vrect.height = vid.height;
 
-				R_SetVrect (&vrect, &r_refdef.vrect, sb_lines);
+				R_SetVrect (&vrect, &r_refdef.vrect, sb_lines * vid_3dscale);
 				R_ViewChanged (vid.aspect);
 			}
 			else
@@ -485,7 +485,7 @@ void R_SetupFrame (void)
 				vrect.width = (int)w;
 				vrect.height = (int)h;
 
-				R_SetVrect (&vrect, &r_refdef.vrect, (int)((float)sb_lines * (h/(float)vid.height)));
+				R_SetVrect (&vrect, &r_refdef.vrect, (int)((float)(sb_lines * vid_3dscale) * (h/(float)vid.height)));
 				R_ViewChanged (vid.aspect * (h / w) * ((float)vid.width / (float)vid.height));
 			}
 		}
@@ -493,7 +493,7 @@ void R_SetupFrame (void)
 		{
 		// scr_vrect alredy holds the original data,
 		// therefore no need for extra R_SetVrect()
-			r_refdef.vrect = scr_vrect;
+			r_refdef.vrect = scr_vrect3d;
 			R_ViewChanged (vid.aspect);
 		}
 

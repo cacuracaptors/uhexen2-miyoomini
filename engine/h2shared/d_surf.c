@@ -94,6 +94,7 @@ void D_InitCaches (void *buffer, int size)
 	sc_base->next = NULL;
 	sc_base->owner = NULL;
 	sc_base->size = sc_size;
+	sc_base->mtuse = D_MT_Done ();
 
 	D_ClearCacheGuard ();
 }
@@ -121,6 +122,7 @@ void D_FlushCaches (void)
 	sc_base->next = NULL;
 	sc_base->owner = NULL;
 	sc_base->size = sc_size;
+	sc_base->mtuse = D_MT_Done ();
 }
 
 /*
@@ -162,6 +164,7 @@ static surfcache_t *D_SCAlloc (int width, int size)
 
 // colect and free surfcache_t blocks until the rover block is large enough
 	new_sc = sc_rover;
+	D_MT_WaitMark (sc_rover->mtuse);	/* Miyoo: the second core may still read it */
 	if (sc_rover->owner)
 		*sc_rover->owner = NULL;
 
@@ -171,6 +174,7 @@ static surfcache_t *D_SCAlloc (int width, int size)
 		sc_rover = sc_rover->next;
 		if (!sc_rover)
 			Sys_Error ("%s: hit the end of memory", __thisfunc__);
+		D_MT_WaitMark (sc_rover->mtuse);
 		if (sc_rover->owner)
 			*sc_rover->owner = NULL;
 
@@ -186,6 +190,7 @@ static surfcache_t *D_SCAlloc (int width, int size)
 		sc_rover->next = new_sc->next;
 		sc_rover->width = 0;
 		sc_rover->owner = NULL;
+		sc_rover->mtuse = D_MT_Done ();
 		new_sc->next = sc_rover;
 		new_sc->size = size;
 	}
@@ -198,6 +203,7 @@ static surfcache_t *D_SCAlloc (int width, int size)
 		new_sc->height = (size - sizeof(*new_sc) + sizeof(new_sc->data)) / width;
 
 	new_sc->owner = NULL;		// should be set properly after return
+	new_sc->mtuse = D_MT_Done ();
 
 	if (d_roverwrapped)
 	{
@@ -280,7 +286,16 @@ surfcache_t *D_CacheSurface (msurface_t *surface, int miplevel)
 			&& cache->lightadj[2] == r_drawsurf.lightadj[2]
 			&& cache->lightadj[3] == r_drawsurf.lightadj[3] 
 			&& !DoSurface)
-		return cache;
+	{
+		return cache;	/* Miyoo: D_DrawSurfaces checks whether it is still being built */
+	}
+
+// Miyoo: a block rebuilt in place may still be read by jobs of the second
+// core: R_DrawSurface waits for them, unless it gives the rebuilding to the
+// second core too (its queue keeps the order). A new block is made of memory
+// that D_SCAlloc checked.
+	r_surf_inplace = (cache != NULL);
+	r_surf_mark = cache ? cache->mtuse : 0;
 
 //
 // determine shape of surface

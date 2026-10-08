@@ -53,7 +53,8 @@ to see this definition's existance */
 	m_class,
 	m_difficulty,
 	m_mload,
-	m_msave
+	m_msave,
+	m_cheats
 };
 
 extern	enum m_state_e	m_state;
