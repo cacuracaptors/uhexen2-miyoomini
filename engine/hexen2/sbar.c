@@ -85,6 +85,8 @@ static void ShowDMUp_f(void);
 static void ToggleDM_f(void);
 static void InvLeft_f(void);
 static void InvRight_f(void);
+static void InvSelect_f(void);
+static void InvShow_f(void);
 static void InvUse_f(void);
 static void InvDrop_f(void);
 static void InvOff_f(void);
@@ -192,6 +194,8 @@ void Sbar_Init(void)
 	Cmd_AddCommand("invuse", InvUse_f);
 	Cmd_AddCommand("invdrop", InvDrop_f);
 	Cmd_AddCommand("invoff", InvOff_f);
+	Cmd_AddCommand("invselect", InvSelect_f);	/* Miyoo */
+	Cmd_AddCommand("invshow", InvShow_f);		/* Miyoo */
 	Cmd_AddCommand("toggle_dm", ToggleDM_f);
 
 	Cvar_RegisterVariable(&DMMode);
@@ -1418,6 +1422,35 @@ static void InvDrop_f(void)
 	if (scr_viewsize.integer < 100)
 		scr_fullupdate = 0;
 	in_impulse = 44;
+}
+
+//==========================================================================
+//
+// InvSelect_f
+//
+// Miyoo: the item marked in the open bar becomes the selected one and the bar
+// closes, as when the bar times out (the Select button let go after cycling)
+//
+//==========================================================================
+
+static void InvSelect_f(void)
+{
+	if (inv_flg)
+		Inv_Update(false);
+}
+
+/* Miyoo: the item bar shown (or kept on screen) without moving the selection:
+ * Select held down */
+static void InvShow_f(void)
+{
+	if (!cl.inv_count || cl.intermission)
+		return;
+	if (!inv_flg)
+	{
+		inv_flg = true;
+		S_LocalSound("misc/invmove.wav");
+	}
+	InventoryHideTime = cl.time+INVENTORY_DISPLAY_TIME;
 }
 
 //==========================================================================

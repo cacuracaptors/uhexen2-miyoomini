@@ -28,6 +28,9 @@
 #include "bgmusic.h"
 #include "cdaudio.h"
 #include <setjmp.h>
+#ifdef MIYOO_ONION
+#include "onion_miyoo.h"
+#endif
 
 /*
  * A server can always be started, even if the system started out as a
@@ -829,6 +832,9 @@ static void _Host_Frame (float time)
 
 // get new key events
 	Sys_SendKeyEvents ();
+#ifdef MIYOO_ONION
+	Onion_Frame ();	/* OnionOS: MENU (Game Switcher...) and power-off */
+#endif
 
 // allow mice or other external controllers to add commands
 	IN_Commands ();

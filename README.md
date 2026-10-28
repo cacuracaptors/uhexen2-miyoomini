@@ -24,6 +24,9 @@ menus and text kept at their original size.
 - A control scheme for the Miyoo Mini Plus buttons, including looking up and down and sidestepping
 - A Cheats page in the Options menu, since there is no keyboard for the console
 - Yes/no questions (Quit, New Game...) answered with the Miyoo buttons
+- OnionOS Game Switcher: leave the game with the Menu button and come back right where you were
+- Save at power off: turn the console off in the middle of a level and it continues from there when turned on
+- Quick save and quick load (Menu + R2 / Menu + L2)
 
 ## Installation
 
@@ -54,15 +57,34 @@ The game's settings and saved games go to `Roms/PORTS/Games/Hexen2/userdir/data1
 | Y | Use (doors, levers, lift objects) |
 | R1 (hold) | Run |
 | L2 / R2 | Previous / next weapon |
-| Select | Next inventory item |
-| Start | Use the selected inventory item |
+| Select | Use the selected inventory item |
+| Select (hold) + Left / Right | Show the item bar and choose the previous / next item (let go of Select to keep it) |
+| Start | Open / close the game's menu |
 | X + Up / Down | Look up / down |
 | X + Start | Look straight ahead |
 | L1 + Left / Right | Sidestep left / right |
-| Menu | Open the menu |
+| L1 + R1 (hold) | Crouch |
+| Menu + R2 | Quick save |
+| Menu + L2 | Quick load |
+| Menu | OnionOS: Game Switcher (see below) |
 
-In the menus, use the D-pad to choose, Start to confirm and Menu to go back. Yes/no questions take Start or A
-for yes, and B or Menu for no. To save or load, open Single Player in the menu; to exit, choose Quit.
+Crouching lasts while both L1 and R1 are held, pressed in any order; Left / Right turn while crouching.
+
+In the menus, use the D-pad to choose, A (or Start) to confirm and B to go back. Yes/no questions take Start or A for
+yes, and B for no. To save or load, open Single Player in the menu; to exit, choose Quit. The quick save has a
+slot of its own: it is loaded only with Menu + L2 and does not show up in the Load menu.
+
+### Menu button, Game Switcher and power off
+
+The Menu button does what it is set to do in OnionOS (the Menu button options in the Tweaks app): by default,
+a tap opens the Game Switcher and holding it goes back to the OnionOS menu; a double tap can switch to the
+previous game. Leaving the game this way, or turning the console off with the power button, saves your position
+in a slot of its own (it does not show up in the Load menu and never replaces your saves), and the next time the
+game opens (from the Game Switcher, or by itself when the console is turned on again) it continues from there;
+hold Menu while turning the console on to skip that, as with any OnionOS game. Where the game itself does not
+let you save (before a game starts, with the player dead, during an intermission) it just closes, and starts as
+always. Menu pressed together with another button (Menu + R2, Menu + L2, the OnionOS Menu + Power
+screenshot) does none of this.
 
 The buttons are set in `Roms/PORTS/Games/Hexen2/userdir/data1/autoexec.cfg`, which is read every time the game
 starts (so it also wins over changes made in the game's own controls menu). It lists the key each Miyoo button
@@ -96,6 +118,11 @@ you leave the menu.
 
 ## Changelog
 
+- **v1.1.0** - OnionOS Game Switcher and save at power off. Quick save (Menu + R2) and quick load (Menu + L2).
+  The game's menu now opens with Start; in the menus A confirms and B goes back. Select uses the selected item,
+  and Select + Left / Right chooses another one. Crouch with L1 + R1. Fixed bands of
+  a single colour (often grey or brown) covering parts of the ceilings and walls in some places, mostly around
+  beams, doors and other movable parts of the map, that came and went as the camera turned.
 - **v1.0.0** - Initial release.
 
 ## Building from source
@@ -150,14 +177,23 @@ image, the controls (`autoexec.cfg`) and `libSDL-1.2.so.0` from the sysroot.
 - **`engine/h2shared/screen.c`**, **`engine/h2shared/draw.c`**, **`engine/hexen2/r_misc.c`** - the separate
   3D and 2D pictures of `-ui320`; yes/no questions answered with Start / A and B / Menu
 - **`engine/h2shared/in_sdl.c`** - the Miyoo buttons: X and L1 as modifiers (X + Up / Down / Start and
-  L1 + Left / Right become keys of their own) and Select apart from B
+  L1 + Left / Right / R1 become keys of their own), Start for the game's menu, Menu + L2 / R2 for the quick
+  save and load, A confirming and B going back in the menus, and Select using the item (alone) or choosing
+  it (with Left / Right); **`engine/hexen2/sbar.c`** - `invselect`, the item marked in the bar selected
 - **`engine/h2shared/snd_vorbis.c`**, **`engine/h2shared/stb_vorbis.c`** - Ogg Vorbis music with
   [stb_vorbis](https://github.com/nothings/stb) (no external library), decoded ahead by a low priority thread on
   the second core
 - **`engine/hexen2/cl_parse.c`**, **`engine/hexen2/menu.c`** - the CD tracks played from
   `data1/music/trackNN.ogg`; the Cheats page in the Options menu
+- **`engine/h2shared/r_bsp.c`** - the distance of a vertex from a clipping plane computed in a single place, so
+  that both edges sharing the vertex agree on its side (with `-ffast-math` on ARM they did not always, and the
+  pieces of doors and beams clipped by the world lost an edge and leaked over the screen)
 - **`engine/hexen2/sbar.c`** - the selected item's icon in the status bar updated when the inventory closes
-- **`engine/hexen2/host.c`** - timing of the frame stages for `-perf`
+- **`engine/h2shared/onion_miyoo.c`** - OnionOS: the Menu button as set in Tweaks (Game Switcher, back to the
+  menu, previous game) and the power-off, each saving the game in a slot of its own and writing the Game
+  Switcher's picture; going on from that save when opened again; and, before the screen opens, the screen mode
+  and the console as the previous program may have left them
+- **`engine/hexen2/host.c`** - timing of the frame stages for `-perf`; the OnionOS checks once a frame
 - **`engine/hexen2/build_miyoomini.sh`**, **`miyoomini/`** - the build script, the OnionOS shortcut, the
   controls and the release packaging
 

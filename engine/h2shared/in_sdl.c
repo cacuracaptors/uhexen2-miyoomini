@@ -817,9 +817,42 @@ void IN_Commands (void)
  * is released, so letting go of the modifier first never leaves a command stuck.
  *    X + Up / Down / Start   ->  AUX1 / AUX2 / AUX3
  *    L1 + Left / Right       ->  AUX4 / AUX5
- *    Select                  ->  AUX6
+ *    L1 + R1                 ->  AUX7 (crouch, while both are held, in any
+ *                               order; Left / Right turn then, no sidestep)
+ *    Select + Left / Right   ->  AUX10 / AUX11 (the item bar: previous / next)
+ *    Select (in the game)    ->  pressed alone, uses the selected item
+ *                               ("invuse"); held, shows the item bar
+ *                               ("invshow"); let go after that, the marked
+ *                               item is selected ("invselect")
+ *    Start (in the game)     ->  ESCAPE (the game's menu)
+ * MENU is a modifier too: on its own it is OnionOS's (the Game Switcher, see
+ * onion_miyoo.c) and never reaches the game.
+ *    Menu + Start            ->  ESCAPE (the game's menu)
+ *    Menu + L2 / R2          ->  AUX8 / AUX9 (quick load / quick save)
+ * In the game's menus A confirms (ENTER) and B goes back (ESCAPE). The buttons of the first half
+ * second are left over from before the game opened (pressed in the Game
+ * Switcher or the menus) and are dropped.
  */
-static qboolean	in_x_held, in_l1_held;
+static qboolean	in_x_held, in_l1_held, in_menu_held;
+static double	in_first_frame;	/* when the game asked for its first keys */
+static qboolean	in_sel_down, in_sel_used;	/* Select held / used with the D-pad */
+static double	in_sel_time, in_sel_show;
+#define	SEL_SHOW	0.3	/* Select held this long: the item bar shows */
+
+/* every frame: Select held shows the item bar, and keeps it on screen */
+static void IN_MiyooSelectTick (void)
+{
+	double	now;
+
+	if (!in_sel_down || Key_GetDest () != key_game)
+		return;
+	now = Sys_DoubleTime ();
+	if (now - in_sel_time >= SEL_SHOW && now >= in_sel_show)
+	{
+		Cbuf_AddText ("invshow\n");
+		in_sel_show = now + 1.0;
+	}
+}
 static unsigned short	in_held_as[256];
 
 /* returns the key to send, or 0 to swallow the event */
@@ -827,6 +860,13 @@ static int IN_MiyooLayer (int rawsym, int sym, int state)
 {
 	int	orig;
 
+	if (Sys_DoubleTime () - in_first_frame < 0.5)
+		return 0;	/* left over from before the game opened */
+	if (rawsym == SDLK_ESCAPE)
+	{
+		in_menu_held = (state != 0);
+		return 0;
+	}
 	if (rawsym == SDLK_LSHIFT)
 	{
 		in_x_held = (state != 0);
@@ -835,10 +875,39 @@ static int IN_MiyooLayer (int rawsym, int sym, int state)
 	if (rawsym == SDLK_e)
 	{
 		in_l1_held = (state != 0);
+	/* R1 already held: crouch (AUX7) while both are held, whatever was
+	 * pressed first, and back to running when L1 is let go */
+		if (in_l1_held && in_held_as['t'] == 't')
+		{
+			Key_Event ('t', false);
+			in_held_as['t'] = K_AUX7;
+			Key_Event (K_AUX7, true);
+		}
+		else if (!in_l1_held && in_held_as['t'] == K_AUX7)
+		{
+			Key_Event (K_AUX7, false);
+			in_held_as['t'] = 't';
+			Key_Event ('t', true);
+		}
 		return 0;
 	}
 	if (rawsym == SDLK_RCTRL)
-		return K_AUX6;
+	{	/* Select: a modifier, and on its own the item */
+		if (state)
+		{
+			in_sel_down = true;
+			in_sel_used = false;
+			in_sel_time = Sys_DoubleTime ();
+			in_sel_show = 0;
+		}
+		else if (in_sel_down)
+		{
+			in_sel_down = false;
+			if (Key_GetDest () == key_game)
+				Cbuf_AddText ((in_sel_used || in_sel_show) ? "invselect\n" : "invuse\n");
+		}
+		return 0;
+	}
 	if (sym <= 0 || sym > 255)
 		return sym;
 
@@ -848,7 +917,30 @@ static int IN_MiyooLayer (int rawsym, int sym, int state)
 		if (!in_held_as[orig])
 		{
 			int mapped = sym;
-			if (in_x_held)
+			if (in_menu_held)
+			{
+				switch (sym)
+				{
+				case K_ENTER:		mapped = K_ESCAPE; break;
+				case K_TAB:		mapped = K_AUX8; break;
+				case K_BACKSPACE:	mapped = K_AUX9; break;
+				default:		break;
+				}
+			}
+			if (in_sel_down && Key_GetDest () == key_game)
+			{
+				switch (sym)
+				{
+				case K_LEFTARROW:	mapped = K_AUX10; in_sel_used = true; break;
+				case K_RIGHTARROW:	mapped = K_AUX11; in_sel_used = true; break;
+				default:		break;
+				}
+			}
+			if (mapped == sym && sym == K_CTRL && Key_GetDest () == key_menu)
+				mapped = K_ESCAPE;	/* B: back, in the menus */
+			if (mapped == sym && sym == K_SPACE && Key_GetDest () == key_menu)
+				mapped = K_ENTER;	/* A: confirm, in the menus */
+			if (mapped == sym && in_x_held)
 			{
 				switch (sym)
 				{
@@ -861,12 +953,15 @@ static int IN_MiyooLayer (int rawsym, int sym, int state)
 			if (mapped == sym && in_l1_held)
 			{
 				switch (sym)
-				{
-				case K_LEFTARROW:	mapped = K_AUX4; break;
-				case K_RIGHTARROW:	mapped = K_AUX5; break;
+				{	/* (no sidestep while crouching: Left / Right turn) */
+				case K_LEFTARROW:	if (in_held_as['t'] != K_AUX7) mapped = K_AUX4; break;
+				case K_RIGHTARROW:	if (in_held_as['t'] != K_AUX7) mapped = K_AUX5; break;
+				case 't':		mapped = K_AUX7; break;	/* R1 */
 				default:		break;
 				}
 			}
+			if (mapped == sym && sym == K_ENTER && Key_GetDest () == key_game)
+				mapped = K_ESCAPE;	/* Start: the game's menu */
 			in_held_as[orig] = (unsigned short) mapped;
 		}
 		return in_held_as[orig];
@@ -886,6 +981,9 @@ void IN_SendKeyEvents (void)
 	int sym, state, modstate;
 	qboolean gamekey;
 
+	if (!in_first_frame)
+		in_first_frame = Sys_DoubleTime ();
+	IN_MiyooSelectTick ();
 	if ((gamekey = Key_IsGameKey()) != prev_gamekey)
 	{
 		prev_gamekey = gamekey;

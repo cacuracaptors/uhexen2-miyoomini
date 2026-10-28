@@ -148,6 +148,25 @@ void R_RotateBmodel (void)
 
 /*
 ================
+R_BPolyVertDist
+
+Miyoo: the distance of a vertex from the clipping plane, always computed by
+this one function. R_RecursiveClipBPoly needs each vertex twice (as the end of
+one edge and the start of the next), and the two results must agree: with
+-ffast-math on ARM the compiler computed the two copies of the same sum in
+different ways, and a vertex lying on the plane (very common, a door or a
+beam touching a wall) came out on one side for one edge and on the other side
+for the next. The clipped polygon then lost an edge, and its surface leaked
+over the screen up to the right border as a band of a single colour.
+================
+*/
+static __attribute__((noinline)) float R_BPolyVertDist (const mvertex_t *v, const mplane_t *p)
+{
+	return DotProduct (v->position, p->normal) - p->dist;
+}
+
+/*
+================
 R_RecursiveClipBPoly
 ================
 */
@@ -181,7 +200,7 @@ static void R_RecursiveClipBPoly (bedge_t *pedges, mnode_t *pnode, msurface_t *p
 	// set the status for the last point as the previous point
 	// FIXME: cache this stuff somehow?
 		plastvert = pedges->v[0];
-		lastdist = DotProduct (plastvert->position, tplane.normal) - tplane.dist;
+		lastdist = R_BPolyVertDist (plastvert, &tplane);
 
 		if (lastdist > 0)
 			lastside = 0;
@@ -190,7 +209,7 @@ static void R_RecursiveClipBPoly (bedge_t *pedges, mnode_t *pnode, msurface_t *p
 
 		pvert = pedges->v[1];
 
-		dist = DotProduct (pvert->position, tplane.normal) - tplane.dist;
+		dist = R_BPolyVertDist (pvert, &tplane);
 
 		if (dist > 0)
 			side = 0;

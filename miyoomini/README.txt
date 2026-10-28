@@ -20,14 +20,19 @@ B .................. jump
 Y .................. use (doors, levers, lift objects)
 R1 (hold) .......... run
 L2 / R2 ............ previous / next weapon
-Select ............. next inventory item
-Start .............. use the selected inventory item
+Select ............. use the selected inventory item
+Select (hold) ...... item bar; + Left / Right: previous / next item
+Start .............. open / close the game's menu
 X + Up / Down ...... look up / down
 X + Start .......... look straight ahead
 L1 + Left / Right .. sidestep left / right
-Menu ............... open the menu
+L1 + R1 ............ crouch (hold both)
+Menu + R2 / L2 ..... quick save / quick load
+Menu ............... OnionOS: Game Switcher (as set in Tweaks)
 
-Menus: D-pad to choose, Start to confirm, Menu to go back. Yes/no questions:
-Start or A for yes, B or Menu for no. Cheats: Options > Cheats.
+Menus: D-pad to choose, A (or Start) to confirm, B to go back. Yes/no questions:
+Start or A for yes, B for no. Cheats: Options > Cheats.
+Leaving with the Menu button or turning the console off saves the game in a
+slot of its own; it continues from there the next time it opens.
 The buttons are set in userdir/data1/autoexec.cfg.
 Settings and saved games: userdir/data1. The game's log: log.txt.

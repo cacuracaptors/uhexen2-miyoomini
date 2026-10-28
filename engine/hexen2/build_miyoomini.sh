@@ -50,8 +50,8 @@ make h2 -j4 \
     MACH_TYPE=arm USE_X86_ASM=no X11BASE= \
     USE_ALSA=no USE_OSS=no USE_SUNAUDIO=no USE_CDAUDIO=no USE_MIDI=no \
     USE_CODEC_WAVE=no USE_CODEC_MP3=no USE_CODEC_VORBIS=no USE_CODEC_TIMIDITY=no \
-    SYSOBJ_SOFT_VID=vid_miyoo.o SYSOBJ_SND=snd_miyoo.o \
-    SDL_CFLAGS="-I$SYSROOT/usr/include/SDL -I$SYSROOT/usr/include -I$MI_INC -D_REENTRANT -DUSE_CODEC_VORBIS -DVORBIS_USE_STB $EXTRA" \
+    SYSOBJ_SOFT_VID="vid_miyoo.o onion_miyoo.o" SYSOBJ_SND=snd_miyoo.o \
+    SDL_CFLAGS="-I$SYSROOT/usr/include/SDL -I$SYSROOT/usr/include -I$MI_INC -D_REENTRANT -DUSE_CODEC_VORBIS -DVORBIS_USE_STB -DMIYOO_ONION $EXTRA" \
     SDL_LIBS="-L$SYSROOT/usr/lib -L$MI_LIB -lSDL -lmi_ao -lmi_sys -lmi_common -lpthread -Wl,--allow-shlib-undefined" \
     || { echo; echo "=== BUILD FAILED (see the first lines with 'error') ==="; exit 1; }
 

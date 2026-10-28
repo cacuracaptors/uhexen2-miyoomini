@@ -37,6 +37,7 @@
 #include "bgmusic.h"
 #include "cdaudio.h"
 #include "sdl_inc.h"
+#include "onion_miyoo.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -1166,6 +1167,8 @@ void VID_Init (const unsigned char *palette)
 	Cvar_RegisterVariable (&_enable_mouse);
 	Cvar_RegisterVariable (&vid_showload);
 
+	Onion_Init ();		/* OnionOS: how the game was opened (Game Switcher, power-off, list) */
+	Onion_BeforeScreen ();	/* the screen mode and the console the previous program left */
 	if (SDL_WasInit(SDL_INIT_VIDEO) == 0)
 	{
 		if (SDL_InitSubSystem(SDL_INIT_VIDEO) < 0)
@@ -1175,11 +1178,13 @@ void VID_Init (const unsigned char *palette)
 	/* SDL's fbcon driver owns the keyboard; take its surface in its native
 	 * 32-bit format and leave drawing to us. */
 	sdlscreen = SDL_SetVideoMode (PANEL_W, PANEL_H, 32, SDL_HWSURFACE | SDL_NOFRAME);
+	Onion_AfterScreen ();
 	if (!sdlscreen)
 		Sys_Error ("Couldn't set video mode: %s", SDL_GetError());
 	SDL_ShowCursor (0);
 
 	fb_init ();
+	Onion_Signals ();	/* SIGTERM (power-off) saves the game instead of closing it */
 
 	outbuf = (uint32_t *) calloc (1, (size_t) PANEL_W * PANEL_H * 4);
 	if (!outbuf)
@@ -1237,10 +1242,19 @@ void VID_Shutdown (void)
 
 	vid_initialized = false;
 
+	Onion_End ();
 	flip_end ();
 	fb_restore ();
 
 	SDL_QuitSubSystem (SDL_INIT_VIDEO);
+}
+
+/* the 640x480 page on screen (for the Game Switcher's picture), or NULL */
+const unsigned int *VID_ScreenPage (void)
+{
+	if (!fb_vsync || !fb_mem)
+		return NULL;
+	return (const unsigned int *) (fb_mem + (size_t) fb_page * PANEL_H * PANEL_W * 4);
 }
 
 void VID_Update (vrect_t *rects)
