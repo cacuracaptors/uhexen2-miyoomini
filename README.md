@@ -215,6 +215,6 @@ Hammer of Thyrion and this port are distributed under the GNU General Public Lic
 [docs/COPYING](docs/COPYING)); stb_vorbis is public domain. Hexen II is a trademark of its respective owners; no
 game data is included - you need your own copy of the game.
 
-##AI-Assisted
+## AI-Assisted
 
 Claude Opus 5.5 was used to write parts of the code and to speed up debugging and optimization.
