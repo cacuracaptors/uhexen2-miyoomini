@@ -214,3 +214,7 @@ The upstream `README.txt` is in [docs/README.uhexen2.txt](docs/README.uhexen2.tx
 Hammer of Thyrion and this port are distributed under the GNU General Public License, version 2 (see
 [docs/COPYING](docs/COPYING)); stb_vorbis is public domain. Hexen II is a trademark of its respective owners; no
 game data is included - you need your own copy of the game.
+
+##AI-Assisted
+
+Claude Opus 5.5 was used to write parts of the code and to speed up debugging and optimization.
