@@ -212,8 +212,15 @@ The upstream `README.txt` is in [docs/README.uhexen2.txt](docs/README.uhexen2.tx
 ## License
 
 Hammer of Thyrion and this port are distributed under the GNU General Public License, version 2 (see
-[docs/COPYING](docs/COPYING)); stb_vorbis is public domain. Hexen II is a trademark of its respective owners; no
-game data is included - you need your own copy of the game.
+[docs/COPYING](docs/COPYING)). That covers the changes made for the Miyoo Mini inside uHexen2's files too (the
+renderer optimizations, `vid_miyoo.c` and `snd_miyoo.c`, which are based on uHexen2's SDL drivers, and so on).
+
+The files written from scratch for this port are also available under the MIT License (see `LICENSE-MIT`):
+`engine/h2shared/onion_miyoo.c`, `engine/h2shared/onion_miyoo.h`, `engine/hexen2/build_miyoomini.sh` and the files
+in `miyoomini/`.
+
+stb_vorbis is public domain. Hexen II is a trademark of its respective owners; no game data is included - you need
+your own copy of the game.
 
 ## AI-Assisted
 
